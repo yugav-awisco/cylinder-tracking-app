@@ -47,7 +47,7 @@ const InventoryForm = () => {
   // Check for missing submissions
   const checkMissingSubmissions = useCallback(async () => {
     try {
-      const response = await fetch(`/records/missing?date=${weekEnding}`);
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/records/missing?date=${weekEnding}`);
       if (response.ok) {
         const missingBranches = await response.json();
         setMissingSubmissions(missingBranches);
@@ -65,7 +65,7 @@ const InventoryForm = () => {
     setExportLoading(true);
     try {
       // Use the correct endpoint that exists in your server
-      const response = await fetch(`/admin/export?branchId=${branchId}&date=${weekEnding}&format=csv`);
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/export?branchId=${branchId}&date=${weekEnding}&format=csv`);
       
       if (!response.ok) {
         throw new Error(`Export failed: ${response.statusText}`);
@@ -136,7 +136,7 @@ const InventoryForm = () => {
       const params = new URLSearchParams({ branchId });
       // Don't filter by group in the API call - get all types for this branch
       
-      const response = await fetch(`/cylinder-types?${params}`);
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/cylinder-types?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       
       const data = await response.json();
@@ -268,7 +268,7 @@ const InventoryForm = () => {
           emptyCount: formData[type.id].empty
         }));
 
-      const response = await fetch('/records', {
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/records', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
