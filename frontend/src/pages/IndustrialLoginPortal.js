@@ -88,8 +88,8 @@ const IndustrialLoginPortal = () => {
         return;
       }
       
-      // For other codes, try the server's auth endpoint (original logic)
-      const response = await fetch('/auth', {
+      // For other codes, try the server's auth endpoint (updated URL)
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/auth', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
