@@ -75,7 +75,7 @@ const AdminDashboard = () => {
     setError('');
     
     try {
-      let url = '/admin/records?limit=1000';
+      let url = 'https://awisco-cylinder-api.onrender.com/admin/records?limit=1000';
       
       if (filters.branchId) {
         url += `&branchId=${filters.branchId}`;
@@ -123,7 +123,7 @@ const AdminDashboard = () => {
     const thisWeekSubmissions = data.filter(r => r.weekEnding === thisWeekDate).length;
     
     // Get total branches from the system
-    fetch('/branches')
+    fetch('https://awisco-cylinder-api.onrender.com/branches')
       .then(response => response.json())
       .then(branches => {
         setStats({
@@ -171,7 +171,7 @@ const AdminDashboard = () => {
 
     setDeleteAllLoading(true);
     try {
-      const response = await fetch('/admin/records/delete-all', {
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/admin/records/delete-all', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -211,7 +211,7 @@ const AdminDashboard = () => {
   const exportData = async () => {
     setExportLoading(true);
     try {
-      let url = '/admin/export?format=csv';
+      let url = 'https://awisco-cylinder-api.onrender.com/admin/export?format=csv';
       
       if (filters.branchId) {
         url += `&branchId=${filters.branchId}`;
@@ -262,7 +262,7 @@ const AdminDashboard = () => {
     setUserManagementLoading(true);
     try {
       // Fetch access codes (users)
-      const usersResponse = await fetch('/admin/users');
+      const usersResponse = await fetch('https://awisco-cylinder-api.onrender.com/admin/users');
       let usersData = [];
       if (usersResponse.ok) {
         usersData = await usersResponse.json();
@@ -270,7 +270,7 @@ const AdminDashboard = () => {
       setUsers(usersData);
 
       // Fetch branches
-      const branchesResponse = await fetch('/branches');
+      const branchesResponse = await fetch('https://awisco-cylinder-api.onrender.com/branches');
       if (branchesResponse.ok) {
         const branchesData = await branchesResponse.json();
         setBranches(branchesData);
@@ -286,7 +286,7 @@ const AdminDashboard = () => {
   const saveUser = async (userData) => {
     try {
       const method = editingUser ? 'PUT' : 'POST';
-      const url = editingUser ? `/admin/users/${editingUser.id}` : '/admin/users';
+      const url = editingUser ? `https://awisco-cylinder-api.onrender.com/admin/users/${editingUser.id}` : 'https://awisco-cylinder-api.onrender.com/admin/users';
       
       const response = await fetch(url, {
         method,
@@ -313,7 +313,7 @@ const AdminDashboard = () => {
     if (!window.confirm('Are you sure you want to delete this user?')) return;
     
     try {
-      const response = await fetch(`/admin/users/${userId}`, {
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/users/${userId}`, {
         method: 'DELETE'
       });
 
