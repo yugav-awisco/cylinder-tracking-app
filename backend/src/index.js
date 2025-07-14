@@ -27,16 +27,9 @@ app.use(express.json());
 // Add preflight handling for complex requests
 app.options('*', cors(corsOptions));
 
-// Add these headers to every response
+// Log requests for debugging
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin);
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  
-  // Log the request for debugging
-  console.log(`${req.method} ${req.path} from ${req.headers.origin || 'unknown origin'}`);
-  
+  console.log(`${req.method} ${req.path} from ${req.headers.origin || 'direct access'}`);
   next();
 });
 
