@@ -5,27 +5,73 @@ const { Pool } = require("pg");
 
 dotenv.config();
 const app = express();
-app.use(cors());
+
+// Enhanced CORS configuration for Netlify + Render
+const corsOptions = {
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001', 
+    'http://localhost:5173',
+    'https://cylinder-tracking-app.netlify.app',
+    'https://awisco-cylinder-api.onrender.com'
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Add preflight handling for complex requests
+app.options('*', cors(corsOptions));
+
+// Add these headers to every response
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  
+  // Log the request for debugging
+  console.log(`${req.method} ${req.path} from ${req.headers.origin || 'unknown origin'}`);
+  
+  next();
+});
+
+// Debug Info and Database URL Fix
+console.log('🔍 Debug Info:');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('PORT:', process.env.PORT);
+console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
+console.log('DATABASE_URL starts with:', process.env.DATABASE_URL?.substring(0, 15) + '...');
+
+// Fix the DATABASE_URL format if needed
+let databaseUrl = process.env.DATABASE_URL;
+if (databaseUrl && databaseUrl.startsWith('postgres://')) {
+  console.log('⚠️ Converting postgres:// to postgresql://');
+  databaseUrl = databaseUrl.replace('postgres://', 'postgresql://');
+}
 
 // Improved connection pool configuration
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  connectionString: databaseUrl,
+  ssl: { 
+    rejectUnauthorized: false,
+    sslmode: 'require' 
+  },
   
-  // Connection pool settings
-  max: 20,                     // Maximum number of clients in pool
-  min: 2,                      // Minimum number of clients in pool
-  idleTimeoutMillis: 30000,    // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 5000, // Return error after 5 seconds if connection unavailable
-  acquireTimeoutMillis: 60000, // Wait up to 60 seconds for a connection
+  // Render-specific optimizations
+  max: 20,
+  min: 1, // Start with at least 1 connection
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000, // Longer timeout for Render
+  acquireTimeoutMillis: 60000,
   
-  // Query timeout settings
-  query_timeout: 30000,        // Cancel queries after 30 seconds
-  statement_timeout: 30000,    // PostgreSQL statement timeout
-  
-  // Connection validation
-  allowExitOnIdle: true,       // Allow process to exit when no connections
+  // Important for Render free tier
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
 // Pool event handlers for debugging
@@ -43,6 +89,24 @@ pool.on('release', (client) => {
 
 pool.on('error', (err, client) => {
   console.error('❌ Pool error:', err);
+});
+
+// Test connection immediately on startup
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('❌ Failed to connect to database on startup:', err.message);
+    console.error('Full error:', err);
+  } else {
+    console.log('✅ Successfully connected to database on startup');
+    client.query('SELECT NOW()', (err, result) => {
+      release();
+      if (err) {
+        console.error('❌ Database query test failed:', err.message);
+      } else {
+        console.log('✅ Database query test successful:', result.rows[0].now);
+      }
+    });
+  }
 });
 
 // Basic health check
@@ -154,6 +218,73 @@ app.post("/records/test", async (req, res) => {
       success: false,
       error: "Database connection test failed",
       details: error.message
+    });
+  }
+});
+
+// Debug simple insert endpoint
+app.post("/debug/simple-insert", async (req, res) => {
+  console.log('🧪 Testing simple database insert...');
+  
+  try {
+    // Test 1: Basic connection
+    const client = await pool.connect();
+    console.log('✅ Got database client');
+    
+    // Test 2: Simple query
+    const timeResult = await client.query('SELECT NOW()');
+    console.log('✅ Basic query successful:', timeResult.rows[0].now);
+    
+    // Test 3: Check if tables exist
+    const tableCheck = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_name IN ('inventory_records', 'access_codes', 'branches')
+    `);
+    console.log('✅ Found tables:', tableCheck.rows.map(r => r.table_name));
+    
+    // Test 4: Check access_codes table
+    const accessCodeCount = await client.query('SELECT COUNT(*) FROM access_codes');
+    console.log('✅ Access codes count:', accessCodeCount.rows[0].count);
+    
+    // Test 5: Try to insert a test record (then delete it)
+    await client.query('BEGIN');
+    
+    const testInsert = await client.query(`
+      INSERT INTO inventory_records (branch_id, type_id, week_ending, full_count, empty_count, created_at, submitted_by_code)
+      VALUES (1, 1, '2025-07-06', 1, 1, NOW(), 'TEST')
+      RETURNING id
+    `);
+    console.log('✅ Test insert successful, ID:', testInsert.rows[0].id);
+    
+    // Clean up test record
+    await client.query('DELETE FROM inventory_records WHERE submitted_by_code = $1', ['TEST']);
+    await client.query('COMMIT');
+    console.log('✅ Test record cleaned up');
+    
+    client.release();
+    
+    res.json({
+      success: true,
+      message: 'All database tests passed!',
+      tests: {
+        connection: 'SUCCESS',
+        basicQuery: 'SUCCESS',
+        tablesFound: tableCheck.rows.length,
+        accessCodesCount: accessCodeCount.rows[0].count,
+        insertTest: 'SUCCESS'
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Database test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint
     });
   }
 });
@@ -997,9 +1128,11 @@ app.listen(PORT, () => {
   console.log(`🧪 Test submission API available at http://localhost:${PORT}/records/test`);
   console.log(`👥 User management API available at http://localhost:${PORT}/admin/users`);
   console.log(`🗑️ Delete all records API available at http://localhost:${PORT}/admin/records/delete-all`);
+  console.log(`🔧 Debug simple insert API available at http://localhost:${PORT}/debug/simple-insert`);
   
   // Log pool configuration
-  console.log(`🔗 Database pool configured: max=${pool.options.max}, min=${pool.options.min || 0}`);
+  console.log(`🔗 Database pool configured: max=${pool.options?.max || 'default'}, min=${pool.options?.min || 'default'}`);
+  console.log(`🌐 CORS enabled for: cylinder-tracking-app.netlify.app`);
 });
 
 module.exports = app;
