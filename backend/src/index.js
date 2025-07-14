@@ -40,258 +40,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Debug Info and Database URL Fix
-console.log('🔍 Debug Info:');
-console.log('NODE_ENV:', process.env.NODE_ENV);
-console.log('PORT:', process.env.PORT);
-console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
-console.log('DATABASE_URL starts with:', process.env.DATABASE_URL?.substring(0, 15) + '...');
-
-// Fix the DATABASE_URL format if needed
-let databaseUrl = process.env.DATABASE_URL;
-if (databaseUrl && databaseUrl.startsWith('postgres://')) {
-  console.log('⚠️ Converting postgres:// to postgresql://');
-  databaseUrl = databaseUrl.replace('postgres://', 'postgresql://');
-}
-
-// Improved connection pool configuration
 const pool = new Pool({
-  connectionString: databaseUrl,
-  ssl: { 
-    rejectUnauthorized: false,
-    sslmode: 'require' 
-  },
-  
-  // Render-specific optimizations
-  max: 20,
-  min: 1, // Start with at least 1 connection
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000, // Longer timeout for Render
-  acquireTimeoutMillis: 60000,
-  
-  // Important for Render free tier
-  keepAlive: true,
-  keepAliveInitialDelayMillis: 10000,
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
-// Pool event handlers for debugging
-pool.on('connect', (client) => {
-  console.log('🔗 New client connected to database');
-});
-
-pool.on('acquire', (client) => {
-  console.log('📥 Client acquired from pool');
-});
-
-pool.on('release', (client) => {
-  console.log('📤 Client released back to pool');
-});
-
-pool.on('error', (err, client) => {
-  console.error('❌ Pool error:', err);
-});
-
-// Test connection immediately on startup
-pool.connect((err, client, release) => {
-  if (err) {
-    console.error('❌ Failed to connect to database on startup:', err.message);
-    console.error('Full error:', err);
-  } else {
-    console.log('✅ Successfully connected to database on startup');
-    client.query('SELECT NOW()', (err, result) => {
-      release();
-      if (err) {
-        console.error('❌ Database query test failed:', err.message);
-      } else {
-        console.log('✅ Database query test successful:', result.rows[0].now);
-      }
-    });
-  }
-});
-
-// Basic health check
 app.get("/", (req, res) => {
-  res.json({
-    status: "API is running",
-    timestamp: new Date().toISOString(),
-    version: "2.0.0"
-  });
-});
-
-// Pool health monitoring endpoint
-app.get("/health/pool", async (req, res) => {
-  try {
-    const start = Date.now();
-    
-    // Test basic connection
-    const client = await pool.connect();
-    const result = await client.query('SELECT NOW(), version()');
-    client.release();
-    
-    const responseTime = Date.now() - start;
-    
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      database: {
-        connected: true,
-        responseTime: `${responseTime}ms`,
-        serverTime: result.rows[0].now,
-        version: result.rows[0].version.split(' ')[0] + ' ' + result.rows[0].version.split(' ')[1]
-      },
-      pool: {
-        totalCount: pool.totalCount || 0,
-        idleCount: pool.idleCount || 0,
-        waitingCount: pool.waitingCount || 0
-      }
-    });
-  } catch (error) {
-    console.error("❌ Pool health check failed:", error);
-    res.status(500).json({
-      status: 'unhealthy',
-      timestamp: new Date().toISOString(),
-      error: error.message,
-      database: {
-        connected: false
-      },
-      pool: {
-        totalCount: pool.totalCount || 0,
-        idleCount: pool.idleCount || 0,
-        waitingCount: pool.waitingCount || 0
-      }
-    });
-  }
-});
-
-// Test submission endpoint (for debugging)
-app.post("/records/test", async (req, res) => {
-  const { branchId, records, accessCode } = req.body;
-  
-  console.log("🧪 Testing submission payload:", { branchId, recordCount: records?.length, accessCode: accessCode ? 'PROVIDED' : 'MISSING' });
-  
-  try {
-    // Validate payload structure
-    if (!branchId || !Array.isArray(records) || !accessCode) {
-      return res.status(400).json({ 
-        success: false,
-        error: "Invalid payload structure",
-        received: { 
-          branchId: !!branchId, 
-          records: Array.isArray(records) ? records.length : 'invalid',
-          accessCode: !!accessCode 
-        }
-      });
-    }
-
-    // Test database connection
-    const client = await pool.connect();
-    
-    // Test access code validity
-    const accessResult = await client.query(
-      "SELECT user_name FROM access_codes WHERE code = $1 AND active = TRUE",
-      [accessCode]
-    );
-    
-    client.release();
-    
-    if (accessResult.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        error: "Invalid or inactive access code"
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Payload validation successful - ready for actual submission",
-      validatedData: {
-        branchId: parseInt(branchId),
-        recordCount: records.length,
-        userName: accessResult.rows[0].user_name,
-        sampleRecord: records[0]
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Test submission failed:", error);
-    res.status(500).json({
-      success: false,
-      error: "Database connection test failed",
-      details: error.message
-    });
-  }
-});
-
-// Debug simple insert endpoint
-app.post("/debug/simple-insert", async (req, res) => {
-  console.log('🧪 Testing simple database insert...');
-  
-  try {
-    // Test 1: Basic connection
-    const client = await pool.connect();
-    console.log('✅ Got database client');
-    
-    // Test 2: Simple query
-    const timeResult = await client.query('SELECT NOW()');
-    console.log('✅ Basic query successful:', timeResult.rows[0].now);
-    
-    // Test 3: Check if tables exist
-    const tableCheck = await client.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
-      AND table_name IN ('inventory_records', 'access_codes', 'branches')
-    `);
-    console.log('✅ Found tables:', tableCheck.rows.map(r => r.table_name));
-    
-    // Test 4: Check access_codes table
-    const accessCodeCount = await client.query('SELECT COUNT(*) FROM access_codes');
-    console.log('✅ Access codes count:', accessCodeCount.rows[0].count);
-    
-    // Test 5: Try to insert a test record (then delete it)
-    await client.query('BEGIN');
-    
-    const testInsert = await client.query(`
-      INSERT INTO inventory_records (branch_id, type_id, week_ending, full_count, empty_count, created_at, submitted_by_code)
-      VALUES (1, 1, '2025-07-06', 1, 1, NOW(), 'TEST')
-      RETURNING id
-    `);
-    console.log('✅ Test insert successful, ID:', testInsert.rows[0].id);
-    
-    // Clean up test record
-    await client.query('DELETE FROM inventory_records WHERE submitted_by_code = $1', ['TEST']);
-    await client.query('COMMIT');
-    console.log('✅ Test record cleaned up');
-    
-    client.release();
-    
-    res.json({
-      success: true,
-      message: 'All database tests passed!',
-      tests: {
-        connection: 'SUCCESS',
-        basicQuery: 'SUCCESS',
-        tablesFound: tableCheck.rows.length,
-        accessCodesCount: accessCodeCount.rows[0].count,
-        insertTest: 'SUCCESS'
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Database test failed:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      code: error.code,
-      detail: error.detail,
-      hint: error.hint
-    });
-  }
+  res.send("API is running");
 });
 
 // Updated Auth Route - now returns user name from database
 app.post("/auth", async (req, res) => {
-  console.log("🔐 Incoming /auth request:", req.body); // Debug
+  console.log(" Incoming /auth request:", req.body); // Debug
 
   const { code } = req.body;
 
@@ -314,7 +74,7 @@ app.post("/auth", async (req, res) => {
       userName: result.rows[0].user_name || 'Unknown User'
     });
   } catch (err) {
-    console.error("❌ Auth error:", err);
+    console.error(" Auth error:", err);
     res.status(500).json({ message: "Server error during authentication." });
   }
 });
@@ -325,7 +85,7 @@ app.get("/branches", async (req, res) => {
     const result = await pool.query("SELECT id, name FROM branches ORDER BY name");
     res.status(200).json(result.rows);
   } catch (err) {
-    console.error("❌ Error fetching branches:", err);
+    console.error(" Error fetching branches:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -365,7 +125,7 @@ app.get("/records", async (req, res) => {
 
     return res.status(200).json(result.rows);
   } catch (err) {
-    console.error("❌ GET /records error:", err);
+    console.error(" GET /records error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -424,7 +184,7 @@ app.get("/admin/records", async (req, res) => {
 
     return res.status(200).json(result.rows);
   } catch (err) {
-    console.error("❌ GET /admin/records error:", err);
+    console.error(" GET /admin/records error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -465,7 +225,7 @@ app.get("/admin/stats", async (req, res) => {
       currentWeek
     });
   } catch (err) {
-    console.error("❌ GET /admin/stats error:", err);
+    console.error(" GET /admin/stats error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -541,7 +301,7 @@ app.get("/admin/export", async (req, res) => {
       res.status(200).json(result.rows);
     }
   } catch (err) {
-    console.error("❌ GET /admin/export error:", err);
+    console.error(" GET /admin/export error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -570,7 +330,7 @@ app.delete("/admin/records/delete-all", async (req, res) => {
       deletedCount: recordCount
     });
   } catch (err) {
-    console.error("❌ DELETE /admin/records/delete-all error:", err);
+    console.error(" DELETE /admin/records/delete-all error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -603,179 +363,70 @@ app.get("/cylinder-types", async (req, res) => {
     const result = await pool.query(query, params);
     res.status(200).json(result.rows);
   } catch (err) {
-    console.error("❌ Error fetching cylinder types:", err);
+    console.error(" Error fetching cylinder types:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// FIXED: Submit inventory records with proper transaction management
+// Updated Submit inventory records with access code for user tracking
 app.post("/records", async (req, res) => {
   const { branchId, records, accessCode } = req.body;
 
-  // Enhanced logging for debugging
-  console.log(`📝 Processing submission: Branch ${branchId}, ${records?.length || 0} records, Access Code: ${accessCode ? 'PROVIDED' : 'MISSING'}`);
-
-  // Step 1: Enhanced validation
+  // Step 1: Basic validation
   if (!branchId || !Array.isArray(records)) {
-    console.log("❌ Validation failed: Missing branchId or records array");
     return res.status(400).json({ error: "branchId and records array are required" });
   }
 
-  if (!accessCode) {
-    console.log("❌ Validation failed: Missing access code");
-    return res.status(400).json({ error: "Access code is required" });
-  }
-
-  if (records.length === 0) {
-    console.log("❌ Validation failed: Empty records array");
-    return res.status(400).json({ error: "At least one record is required" });
-  }
-
   // Step 2: Validate each record
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
+  for (let record of records) {
     const { typeId, weekEnding, fullCount, emptyCount } = record;
 
     if (!typeId || !weekEnding || fullCount == null || emptyCount == null) {
-      console.log(`❌ Record ${i} validation failed:`, record);
-      return res.status(400).json({ 
-        error: `Missing required fields in record ${i + 1}`,
-        invalidRecord: record
-      });
+      return res.status(400).json({ error: "Missing required fields in one of the records" });
     }
 
     if (fullCount < 0 || emptyCount < 0) {
-      console.log(`❌ Record ${i} has negative counts:`, record);
-      return res.status(400).json({ 
-        error: `Counts must be 0 or greater in record ${i + 1}`,
-        invalidRecord: record
-      });
+      return res.status(400).json({ error: "Counts must be 0 or greater" });
     }
   }
 
-  // Step 3: Use proper transaction with dedicated client
-  const client = await pool.connect();
-  
+  // Step 3: Insert records into DB with access code
   try {
-    console.log("🔄 Starting database transaction...");
-    await client.query('BEGIN');
-
-    // Step 3a: Verify access code first
-    const accessCodeResult = await client.query(
-      "SELECT branch_id, user_name, active FROM access_codes WHERE code = $1",
-      [accessCode]
-    );
-
-    if (accessCodeResult.rows.length === 0) {
-      console.log("❌ Invalid access code:", accessCode);
-      await client.query('ROLLBACK');
-      return res.status(401).json({ error: "Invalid access code" });
-    }
-
-    if (!accessCodeResult.rows[0].active) {
-      console.log("❌ Inactive access code:", accessCode);
-      await client.query('ROLLBACK');
-      return res.status(401).json({ error: "Access code is inactive" });
-    }
-
-    const userName = accessCodeResult.rows[0].user_name;
-    console.log(`✅ Access code validated for user: ${userName}`);
-
-    // Step 3b: Check for duplicates before inserting
-    const duplicateChecks = records.map(record => 
-      `(branch_id = ${branchId} AND type_id = ${record.typeId} AND week_ending = '${record.weekEnding}')`
-    ).join(' OR ');
-
-    const duplicateResult = await client.query(
-      `SELECT branch_id, type_id, week_ending FROM inventory_records WHERE ${duplicateChecks}`
-    );
-
-    if (duplicateResult.rows.length > 0) {
-      console.log("❌ Duplicate records found:", duplicateResult.rows);
-      await client.query('ROLLBACK');
-      return res.status(409).json({ 
-        error: "Duplicate entries detected. These records have already been submitted.",
-        duplicates: duplicateResult.rows
-      });
-    }
-
-    // Step 3c: Insert all records in single transaction
     const insertResults = [];
-    console.log(`📝 Inserting ${records.length} records...`);
 
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
+    for (let record of records) {
       const { typeId, weekEnding, fullCount, emptyCount } = record;
 
-      const result = await client.query(
-        `INSERT INTO inventory_records (branch_id, type_id, week_ending, full_count, empty_count, created_at, submitted_by_code)
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6)
-         RETURNING id, branch_id, type_id, week_ending, full_count, empty_count, created_at`,
-        [branchId, typeId, weekEnding, fullCount, emptyCount, accessCode]
-      );
-      
-      insertResults.push(result.rows[0]);
-      console.log(`✅ Inserted record ${i + 1}/${records.length}: typeId ${typeId}`);
+      try {
+        const result = await pool.query(
+          `INSERT INTO inventory_records (branch_id, type_id, week_ending, full_count, empty_count, created_at, submitted_by_code)
+           VALUES ($1, $2, $3, $4, $5, NOW(), $6)
+           RETURNING *`,
+          [branchId, typeId, weekEnding, fullCount, emptyCount, accessCode]
+        );
+        insertResults.push(result.rows[0]);
+
+      } catch (err) {
+        if (err.code === '23505') { // duplicate key violation
+          return res.status(409).json({ error: `Duplicate entry for typeId ${typeId} on ${weekEnding}` });
+        } else {
+          console.error("DB Insert error:", err);
+          return res.status(500).json({ error: "Internal server error" });
+        }
+      }
     }
 
-    // Step 3d: Commit transaction
-    await client.query('COMMIT');
-    console.log(`🎉 Successfully committed ${insertResults.length} records for branch ${branchId} by ${userName}`);
+    console.log(`✅ Successfully inserted ${insertResults.length} records for branch ${branchId} by access code ${accessCode}`);
 
     return res.status(201).json({ 
       message: "Records saved successfully", 
       data: insertResults,
-      count: insertResults.length,
-      submittedBy: userName,
-      branchId: parseInt(branchId)
+      count: insertResults.length
     });
 
   } catch (err) {
-    // Step 4: Rollback on any error
-    console.error("❌ Transaction error:", err);
-    
-    try {
-      await client.query('ROLLBACK');
-      console.log("🔄 Transaction rolled back successfully");
-    } catch (rollbackErr) {
-      console.error("❌ Rollback failed:", rollbackErr);
-    }
-
-    // Handle specific error types
-    if (err.code === '23505') { // Unique constraint violation
-      return res.status(409).json({ 
-        error: "Duplicate entry detected during insertion",
-        details: err.detail
-      });
-    } else if (err.code === '23503') { // Foreign key violation
-      return res.status(400).json({ 
-        error: "Invalid branch ID or cylinder type ID",
-        details: err.detail
-      });
-    } else if (err.code === '23514') { // Check constraint violation
-      return res.status(400).json({ 
-        error: "Data validation failed",
-        details: err.detail
-      });
-    } else if (err.code === 'ECONNRESET' || err.code === 'ENOTFOUND') {
-      return res.status(503).json({ 
-        error: "Database connection issue. Please try again in a moment." 
-      });
-    } else if (err.message && err.message.includes('timeout')) {
-      return res.status(408).json({ 
-        error: "Database operation timed out. Please try again." 
-      });
-    } else {
-      return res.status(500).json({ 
-        error: "Server error during submission",
-        message: process.env.NODE_ENV === 'development' ? err.message : "Internal server error"
-      });
-    }
-
-  } finally {
-    // Step 5: Always release the client back to pool
-    client.release();
-    console.log("📤 Database client released back to pool");
+    console.error(" Unexpected error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -806,7 +457,7 @@ app.get("/records/missing", async (req, res) => {
 
     res.status(200).json(missingBranches);
   } catch (err) {
-    console.error("❌ Error checking missing submissions:", err);
+    console.error(" Error checking missing submissions:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -831,7 +482,7 @@ app.get("/admin/users", async (req, res) => {
 
     res.status(200).json(result.rows);
   } catch (err) {
-    console.error("❌ GET /admin/users error:", err);
+    console.error(" GET /admin/users error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -880,7 +531,7 @@ app.post("/admin/users", async (req, res) => {
       user: result.rows[0]
     });
   } catch (err) {
-    console.error("❌ POST /admin/users error:", err);
+    console.error(" POST /admin/users error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -941,7 +592,7 @@ app.put("/admin/users/:id", async (req, res) => {
       user: result.rows[0]
     });
   } catch (err) {
-    console.error("❌ PUT /admin/users error:", err);
+    console.error(" PUT /admin/users error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -984,7 +635,7 @@ app.delete("/admin/users/:id", async (req, res) => {
       message: "User deleted successfully"
     });
   } catch (err) {
-    console.error("❌ DELETE /admin/users error:", err);
+    console.error(" DELETE /admin/users error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -1002,10 +653,10 @@ app.patch("/admin/users/bulk-status", async (req, res) => {
   }
 
   try {
-    const placeholders = userIds.map((_, index) => `${index + 1}`).join(',');
+    const placeholders = userIds.map((_, index) => `$${index + 1}`).join(',');
     const result = await pool.query(
       `UPDATE access_codes 
-       SET active = ${userIds.length + 1}
+       SET active = $${userIds.length + 1}
        WHERE id IN (${placeholders})
        RETURNING code, user_name`,
       [...userIds, active]
@@ -1018,7 +669,7 @@ app.patch("/admin/users/bulk-status", async (req, res) => {
       updatedUsers: result.rows
     });
   } catch (err) {
-    console.error("❌ PATCH /admin/users/bulk-status error:", err);
+    console.error(" PATCH /admin/users/bulk-status error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -1078,7 +729,7 @@ app.get("/admin/users/:id/activity", async (req, res) => {
       recentSubmissions: recentResult.rows
     });
   } catch (err) {
-    console.error("❌ GET /admin/users/:id/activity error:", err);
+    console.error(" GET /admin/users/:id/activity error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -1092,46 +743,18 @@ function getCurrentWeekSunday() {
   return sunday.toISOString().split('T')[0];
 }
 
-// Graceful shutdown handlers
-process.on('SIGINT', async () => {
-  console.log('🛑 Received SIGINT, closing pool...');
-  await pool.end();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('🛑 Received SIGTERM, closing pool...');
-  await pool.end();
-  process.exit(0);
-});
-
-// Keep connection alive in production (ping every 14 minutes to prevent sleeping)
-if (process.env.NODE_ENV === 'production') {
-  setInterval(() => {
-    fetch(`${process.env.RENDER_EXTERNAL_URL || 'https://awisco-cylinder-api.onrender.com'}/health/pool`)
-      .then(() => console.log('🏓 Keep-alive ping sent'))
-      .catch(() => console.log('❌ Keep-alive ping failed'));
-  }, 14 * 60 * 1000); // 14 minutes
-} else {
-  // Development: simpler keep-alive
-  setInterval(() => {
-    pool.query("SELECT 1").catch(() => {});
-  }, 1000 * 60 * 4);
-}
+// Optional: Keep connection alive in dev (every 4 min)
+setInterval(() => {
+  pool.query("SELECT 1").catch(() => {});
+}, 1000 * 60 * 4);
 
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
-  console.log(`📊 Health check available at http://localhost:${PORT}/health/pool`);
   console.log(`📊 Admin dashboard available at http://localhost:${PORT}/admin/stats`);
   console.log(`📋 Records API available at http://localhost:${PORT}/records`);
-  console.log(`🧪 Test submission API available at http://localhost:${PORT}/records/test`);
   console.log(`👥 User management API available at http://localhost:${PORT}/admin/users`);
   console.log(`🗑️ Delete all records API available at http://localhost:${PORT}/admin/records/delete-all`);
-  console.log(`🔧 Debug simple insert API available at http://localhost:${PORT}/debug/simple-insert`);
-  
-  // Log pool configuration
-  console.log(`🔗 Database pool configured: max=${pool.options?.max || 'default'}, min=${pool.options?.min || 'default'}`);
   console.log(`🌐 CORS enabled for: cylinder-tracking-app.netlify.app`);
 });
 
