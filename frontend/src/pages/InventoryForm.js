@@ -2,10 +2,10 @@ import React, { useEffect, useState, useCallback } from 'react';
 import LogoutButton from '../components/LogoutButton';
 
 const InventoryForm = () => {
-  // State management
+  // Existing state management
   const [cylinderTypes, setCylinderTypes] = useState([]);
   const [filteredCylinderTypes, setFilteredCylinderTypes] = useState([]);
-  const [cylinderGroups, setCylinderGroups] = useState([]); // NEW: Store available groups
+  const [cylinderGroups, setCylinderGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [formData, setFormData] = useState({});
@@ -16,10 +16,20 @@ const InventoryForm = () => {
   const [weekEnding, setWeekEnding] = useState('');
   const [validationErrors, setValidationErrors] = useState({});
   const [currentUser, setCurrentUser] = useState('');
-  const [accessCode, setAccessCode] = useState(''); // Store access code for user tracking
+  const [accessCode, setAccessCode] = useState('');
   const [missingSubmissions, setMissingSubmissions] = useState([]);
   const [showMissingAlert, setShowMissingAlert] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+
+  // NEW: Past entries state
+  const [showPastEntries, setShowPastEntries] = useState(false);
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState(null);
+  const [pastEntries, setPastEntries] = useState([]);
+  const [groupedPastEntries, setGroupedPastEntries] = useState([]);
+  const [expandedPastSubmissions, setExpandedPastSubmissions] = useState(new Set());
+  const [pastEntriesLoading, setPastEntriesLoading] = useState(false);
+  const [branchesLoading, setBranchesLoading] = useState(false);
 
   // Get current week's Sunday
   const getCurrentWeekSunday = () => {
@@ -28,6 +38,92 @@ const InventoryForm = () => {
     const sunday = new Date(today);
     sunday.setDate(today.getDate() - dayOfWeek);
     return sunday.toISOString().split('T')[0];
+  };
+
+  // Group records by submission (same logic as admin dashboard)
+  const groupRecordsBySubmission = (records) => {
+    const groups = {};
+    
+    records.forEach(record => {
+      const submissionTime = new Date(record.submittedAt);
+      const roundedTime = new Date(submissionTime.getFullYear(), submissionTime.getMonth(), submissionTime.getDate(), submissionTime.getHours(), submissionTime.getMinutes());
+      const submissionKey = `${record.branchId}_${record.weekEnding}_${record.submittedBy}_${roundedTime.getTime()}`;
+      
+      if (!groups[submissionKey]) {
+        groups[submissionKey] = {
+          id: submissionKey,
+          branchId: record.branchId,
+          branchName: record.branchName,
+          weekEnding: record.weekEnding,
+          submittedBy: record.submittedBy,
+          submittedAt: record.submittedAt,
+          records: [],
+          totalCylinders: 0,
+          totalTypes: 0
+        };
+      }
+      
+      groups[submissionKey].records.push(record);
+      groups[submissionKey].totalCylinders += (record.fullCount || 0) + (record.emptyCount || 0);
+      groups[submissionKey].totalTypes = groups[submissionKey].records.length;
+    });
+    
+    return Object.values(groups).sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+  };
+
+  // Fetch all branches for selection
+  const fetchBranches = async () => {
+    setBranchesLoading(true);
+    try {
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/branches');
+      if (response.ok) {
+        const branchesData = await response.json();
+        setBranches(branchesData);
+      }
+    } catch (error) {
+      console.error('Error fetching branches:', error);
+      setMessage({ text: 'Failed to load branches', type: 'error' });
+    } finally {
+      setBranchesLoading(false);
+    }
+  };
+
+  // Fetch past entries for selected branch
+  const fetchPastEntries = async (branchId) => {
+    setPastEntriesLoading(true);
+    try {
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/records?branchId=${branchId}&limit=1000`);
+      if (response.ok) {
+        const data = await response.json();
+        setPastEntries(data);
+        setGroupedPastEntries(groupRecordsBySubmission(data));
+      } else {
+        throw new Error('Failed to fetch past entries');
+      }
+    } catch (error) {
+      console.error('Error fetching past entries:', error);
+      setMessage({ text: 'Failed to load past entries', type: 'error' });
+    } finally {
+      setPastEntriesLoading(false);
+    }
+  };
+
+  // Handle branch selection for past entries
+  const handleBranchSelect = (branch) => {
+    setSelectedBranch(branch);
+    fetchPastEntries(branch.id);
+    setExpandedPastSubmissions(new Set()); // Reset expanded state
+  };
+
+  // Toggle expansion of past submission
+  const togglePastSubmissionExpansion = (submissionId) => {
+    const newExpanded = new Set(expandedPastSubmissions);
+    if (newExpanded.has(submissionId)) {
+      newExpanded.delete(submissionId);
+    } else {
+      newExpanded.add(submissionId);
+    }
+    setExpandedPastSubmissions(newExpanded);
   };
 
   // Initialize component
@@ -60,18 +156,16 @@ const InventoryForm = () => {
     }
   }, [weekEnding]);
 
-  // Export CSV function - FIXED to use correct endpoint
+  // Export CSV function
   const exportToCSV = async () => {
     setExportLoading(true);
     try {
-      // Use the correct endpoint that exists in your server
       const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/export?branchId=${branchId}&date=${weekEnding}&format=csv`);
       
       if (!response.ok) {
         throw new Error(`Export failed: ${response.statusText}`);
       }
 
-      // Get the filename from the response headers or create a default one
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = `inventory_branch_${branchId}_${weekEnding}.csv`;
       
@@ -82,7 +176,6 @@ const InventoryForm = () => {
         }
       }
 
-      // Create blob and download
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -109,12 +202,10 @@ const InventoryForm = () => {
   useEffect(() => {
     let filtered = cylinderTypes;
 
-    // Filter by selected group
     if (selectedGroup) {
       filtered = filtered.filter(type => type.group === selectedGroup);
     }
 
-    // Filter by search term
     if (searchTerm) {
       filtered = filtered.filter(type =>
         type.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -134,8 +225,6 @@ const InventoryForm = () => {
     
     try {
       const params = new URLSearchParams({ branchId });
-      // Don't filter by group in the API call - get all types for this branch
-      
       const response = await fetch(`https://awisco-cylinder-api.onrender.com/cylinder-types?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       
@@ -147,14 +236,9 @@ const InventoryForm = () => {
       
       setCylinderTypes(mappedData);
       
-      // Extract unique groups from the cylinder types
       const uniqueGroups = [...new Set(mappedData.map(type => type.group).filter(Boolean))];
       setCylinderGroups(uniqueGroups.sort());
       
-      console.log('API data loaded:', mappedData);
-      console.log('Available groups:', uniqueGroups);
-      
-      // Initialize form data for new types
       const newFormData = {};
       mappedData.forEach(type => {
         if (!formData[type.id]) {
@@ -192,7 +276,6 @@ const InventoryForm = () => {
       }
     }));
 
-    // Clear validation error for this field
     const errorKey = `${typeId}_${field}`;
     if (validationErrors[errorKey]) {
       setValidationErrors(prev => {
@@ -232,14 +315,13 @@ const InventoryForm = () => {
     return Object.keys(errors).length === 0;
   };
 
-  // Handle form submission - UPDATED to send access code
+  // Handle form submission
   const handleSubmit = async () => {
     if (!validateForm()) {
       setMessage({ text: 'Please fix validation errors', type: 'error' });
       return;
     }
 
-    // Show confirmation dialog
     const totalItems = cylinderTypes.reduce((sum, type) => {
       const data = formData[type.id];
       return sum + (data?.full || 0) + (data?.empty || 0);
@@ -248,7 +330,7 @@ const InventoryForm = () => {
     const confirmMessage = `Are you sure you want to submit this inventory?\n\nSummary:\n- Total cylinders counted: ${totalItems}\n- Week ending: ${weekEnding}\n- Branch: ${branchId}\n- Submitted by: ${currentUser}\n\nPlease verify all counts are correct before proceeding.`;
 
     if (!window.confirm(confirmMessage)) {
-      return; // User cancelled
+      return;
     }
 
     setSubmitLoading(true);
@@ -274,7 +356,7 @@ const InventoryForm = () => {
         body: JSON.stringify({
           branchId: parseInt(branchId),
           records: records,
-          accessCode: accessCode // Send access code instead of user name
+          accessCode: accessCode
         })
       });
 
@@ -326,6 +408,474 @@ const InventoryForm = () => {
     );
   }
 
+  // Render Past Entries Modal/Overlay
+  if (showPastEntries) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)',
+        padding: '20px'
+      }}>
+        <div style={{
+          maxWidth: '1400px',
+          margin: '0 auto',
+          background: 'white',
+          borderRadius: '15px',
+          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.15)',
+          overflow: 'hidden'
+        }}>
+          {/* Past Entries Header */}
+          <div style={{
+            background: 'linear-gradient(135deg, #4a5568 0%, #2d3748 100%)',
+            color: 'white',
+            padding: '30px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <div>
+              <h1 style={{ margin: '0 0 10px 0', fontSize: '28px', fontWeight: '600' }}>
+                Past Branch Entries
+              </h1>
+              <p style={{ margin: 0, opacity: 0.9 }}>
+                {selectedBranch ? `Viewing entries for ${selectedBranch.name} (ID: ${selectedBranch.id})` : 'Select a branch to view past entries'}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setShowPastEntries(false);
+                setSelectedBranch(null);
+                setPastEntries([]);
+                setGroupedPastEntries([]);
+              }}
+              style={{
+                background: 'rgba(255, 255, 255, 0.2)',
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                color: 'white',
+                padding: '10px 20px',
+                borderRadius: '8px',
+                fontSize: '14px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+              Close
+            </button>
+          </div>
+
+          <div style={{ padding: '30px' }}>
+            {!selectedBranch ? (
+              // Branch Selection View
+              <div>
+                <h3 style={{ marginBottom: '20px', fontSize: '20px', fontWeight: '600', color: '#2d3748' }}>
+                  Select a Branch
+                </h3>
+                
+                {branchesLoading ? (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <div style={{ fontSize: '16px', color: '#666' }}>Loading branches...</div>
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                    gap: '20px'
+                  }}>
+                    {branches.map(branch => (
+                      <div
+                        key={branch.id}
+                        onClick={() => handleBranchSelect(branch)}
+                        style={{
+                          padding: '20px',
+                          border: '2px solid #e2e8f0',
+                          borderRadius: '12px',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          background: 'white'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = '#3182ce';
+                          e.currentTarget.style.boxShadow = '0 4px 12px rgba(49, 130, 206, 0.15)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = '#e2e8f0';
+                          e.currentTarget.style.boxShadow = 'none';
+                        }}
+                      >
+                        <div style={{ fontSize: '18px', fontWeight: '600', color: '#2d3748', marginBottom: '8px' }}>
+                          {branch.name}
+                        </div>
+                        <div style={{ fontSize: '14px', color: '#718096' }}>
+                          Branch ID: {branch.id}
+                        </div>
+                        <div style={{ 
+                          marginTop: '12px',
+                          fontSize: '14px',
+                          color: '#3182ce',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}>
+                          View Entries
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <polyline points="9,18 15,12 9,6"></polyline>
+                          </svg>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              // Past Entries View
+              <div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  marginBottom: '20px'
+                }}>
+                  <button
+                    onClick={() => {
+                      setSelectedBranch(null);
+                      setPastEntries([]);
+                      setGroupedPastEntries([]);
+                    }}
+                    style={{
+                      background: '#e2e8f0',
+                      border: 'none',
+                      color: '#4a5568',
+                      padding: '10px 16px',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="15,18 9,12 15,6"></polyline>
+                    </svg>
+                    Back to Branches
+                  </button>
+                  
+                  <div style={{ fontSize: '14px', color: '#718096' }}>
+                    {groupedPastEntries.length} submissions • {pastEntries.length} total records
+                  </div>
+                </div>
+
+                {pastEntriesLoading ? (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <div style={{ fontSize: '16px', color: '#666' }}>Loading past entries...</div>
+                  </div>
+                ) : groupedPastEntries.length === 0 ? (
+                  <div style={{ 
+                    textAlign: 'center', 
+                    padding: '40px',
+                    color: '#718096'
+                  }}>
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ margin: '0 auto 16px' }}>
+                      <circle cx="11" cy="11" r="8"></circle>
+                      <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                    <div style={{ fontSize: '16px', marginBottom: '8px' }}>No entries found</div>
+                    <div style={{ fontSize: '14px' }}>This branch hasn't submitted any inventory records yet</div>
+                  </div>
+                ) : (
+                  // Past Entries Table (Same as Admin Dashboard)
+                  <div style={{
+                    border: '2px solid #e2e8f0',
+                    borderRadius: '12px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      background: '#f7fafc',
+                      padding: '16px 24px',
+                      borderBottom: '1px solid #e2e8f0'
+                    }}>
+                      <h4 style={{ 
+                        margin: 0, 
+                        fontSize: '16px', 
+                        fontWeight: '600',
+                        color: '#2d3748'
+                      }}>
+                        Submission History
+                      </h4>
+                    </div>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ background: '#f7fafc' }}>
+                            <th style={{ padding: '16px 24px', textAlign: 'left', fontSize: '14px', fontWeight: '600', color: '#4a5568', width: '50px' }}></th>
+                            <th style={{ padding: '16px 24px', textAlign: 'left', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>Week Ending</th>
+                            <th style={{ padding: '16px 24px', textAlign: 'center', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>Total Cylinders</th>
+                            <th style={{ padding: '16px 24px', textAlign: 'center', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>Cylinder Types</th>
+                            <th style={{ padding: '16px 24px', textAlign: 'left', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>Submitted By</th>
+                            <th style={{ padding: '16px 24px', textAlign: 'left', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>Submitted</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {groupedPastEntries.map((submission) => (
+                            <React.Fragment key={submission.id}>
+                              {/* Main submission row */}
+                              <tr 
+                                style={{ 
+                                  borderBottom: '1px solid #e2e8f0',
+                                  cursor: 'pointer',
+                                  background: expandedPastSubmissions.has(submission.id) ? '#f8fafc' : 'white',
+                                  transition: 'background-color 0.2s'
+                                }}
+                                onClick={() => togglePastSubmissionExpansion(submission.id)}
+                                onMouseEnter={(e) => {
+                                  if (!expandedPastSubmissions.has(submission.id)) {
+                                    e.currentTarget.style.background = '#f9fafb';
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (!expandedPastSubmissions.has(submission.id)) {
+                                    e.currentTarget.style.background = 'white';
+                                  }
+                                }}
+                              >
+                                <td style={{ padding: '16px 24px', textAlign: 'center' }}>
+                                  <svg 
+                                    width="16" 
+                                    height="16" 
+                                    viewBox="0 0 24 24" 
+                                    fill="none" 
+                                    stroke="#4a5568" 
+                                    strokeWidth="2"
+                                    style={{
+                                      transform: expandedPastSubmissions.has(submission.id) ? 'rotate(90deg)' : 'rotate(0deg)',
+                                      transition: 'transform 0.2s'
+                                    }}
+                                  >
+                                    <polyline points="9,18 15,12 9,6"></polyline>
+                                  </svg>
+                                </td>
+                                <td style={{ padding: '16px 24px', color: '#4a5568' }}>
+                                  {new Date(submission.weekEnding).toLocaleDateString()}
+                                </td>
+                                <td style={{ padding: '16px 24px', textAlign: 'center' }}>
+                                  <span style={{
+                                    fontWeight: '600', 
+                                    color: '#3182ce',
+                                    background: '#ebf8ff',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '14px'
+                                  }}>
+                                    {submission.totalCylinders}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '16px 24px', textAlign: 'center' }}>
+                                  <span style={{
+                                    color: '#4a5568',
+                                    background: '#f7fafc',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '14px'
+                                  }}>
+                                    {submission.totalTypes} types
+                                  </span>
+                                </td>
+                                <td style={{ padding: '16px 24px' }}>
+                                  <div style={{ 
+                                    fontWeight: '500', 
+                                    color: '#2d3748',
+                                    padding: '4px 12px',
+                                    background: '#e6fffa',
+                                    borderRadius: '20px',
+                                    fontSize: '12px',
+                                    display: 'inline-block',
+                                    border: '1px solid #b2f5ea'
+                                  }}>
+                                    {submission.submittedBy || 'Unknown User'}
+                                  </div>
+                                </td>
+                                <td style={{ padding: '16px 24px' }}>
+                                  <div style={{ fontSize: '14px', color: '#4a5568' }}>
+                                    {new Date(submission.submittedAt).toLocaleDateString()}
+                                  </div>
+                                  <div style={{ fontSize: '12px', color: '#718096' }}>
+                                    {new Date(submission.submittedAt).toLocaleTimeString()}
+                                  </div>
+                                </td>
+                              </tr>
+                              
+                              {/* Expanded cylinder details */}
+                              {expandedPastSubmissions.has(submission.id) && (
+                                <tr>
+                                  <td colSpan="6" style={{ padding: '0', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                                    <div style={{ padding: '24px' }}>
+                                      <div style={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        marginBottom: '16px'
+                                      }}>
+                                        <h4 style={{ 
+                                          margin: 0, 
+                                          fontSize: '16px', 
+                                          fontWeight: '600', 
+                                          color: '#2d3748',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: '8px'
+                                        }}>
+                                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                            <line x1="9" y1="9" x2="15" y2="15"></line>
+                                            <line x1="15" y1="9" x2="9" y2="15"></line>
+                                          </svg>
+                                          Cylinder Details ({submission.totalTypes} types)
+                                        </h4>
+                                        <div style={{
+                                          display: 'flex',
+                                          gap: '16px',
+                                          fontSize: '14px',
+                                          color: '#718096'
+                                        }}>
+                                          <span>Total Full: {submission.records.reduce((sum, r) => sum + (r.fullCount || 0), 0)}</span>
+                                          <span>Total Empty: {submission.records.reduce((sum, r) => sum + (r.emptyCount || 0), 0)}</span>
+                                        </div>
+                                      </div>
+                                      
+                                      <div style={{ 
+                                        display: 'grid', 
+                                        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
+                                        gap: '12px' 
+                                      }}>
+                                        {submission.records
+                                          .sort((a, b) => (a.groupName || '').localeCompare(b.groupName || ''))
+                                          .map((record, index) => (
+                                          <div 
+                                            key={index}
+                                            style={{
+                                              background: 'white',
+                                              padding: '16px',
+                                              borderRadius: '8px',
+                                              border: '1px solid #e2e8f0',
+                                              boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+                                            }}
+                                          >
+                                            <div style={{ 
+                                              display: 'flex', 
+                                              justifyContent: 'space-between', 
+                                              alignItems: 'flex-start',
+                                              marginBottom: '12px'
+                                            }}>
+                                              <div style={{ flex: 1 }}>
+                                                <div style={{ 
+                                                  fontWeight: '600', 
+                                                  color: '#2d3748',
+                                                  fontSize: '14px',
+                                                  marginBottom: '4px'
+                                                }}>
+                                                  {record.cylinderType || record.label}
+                                                </div>
+                                                {record.groupName && (
+                                                  <div style={{ 
+                                                    fontSize: '12px', 
+                                                    color: '#718096',
+                                                    background: '#f7fafc',
+                                                    padding: '2px 6px',
+                                                    borderRadius: '4px',
+                                                    display: 'inline-block'
+                                                  }}>
+                                                    {record.groupName}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </div>
+                                            
+                                            <div style={{ 
+                                              display: 'flex', 
+                                              gap: '8px', 
+                                              alignItems: 'center',
+                                              justifyContent: 'center'
+                                            }}>
+                                              <div style={{
+                                                flex: 1,
+                                                textAlign: 'center',
+                                                padding: '8px',
+                                                background: '#dcfce7',
+                                                borderRadius: '6px',
+                                                border: '1px solid #bbf7d0'
+                                              }}>
+                                                <div style={{ 
+                                                  fontSize: '12px', 
+                                                  color: '#166534',
+                                                  fontWeight: '500',
+                                                  marginBottom: '2px'
+                                                }}>
+                                                  FULL
+                                                </div>
+                                                <div style={{ 
+                                                  fontSize: '18px', 
+                                                  fontWeight: '700',
+                                                  color: '#166534'
+                                                }}>
+                                                  {record.fullCount || 0}
+                                                </div>
+                                              </div>
+                                              
+                                              <div style={{
+                                                flex: 1,
+                                                textAlign: 'center',
+                                                padding: '8px',
+                                                background: '#fef2f2',
+                                                borderRadius: '6px',
+                                                border: '1px solid #fecaca'
+                                              }}>
+                                                <div style={{ 
+                                                  fontSize: '12px', 
+                                                  color: '#991b1b',
+                                                  fontWeight: '500',
+                                                  marginBottom: '2px'
+                                                }}>
+                                                  EMPTY
+                                                </div>
+                                                <div style={{ 
+                                                  fontSize: '18px', 
+                                                  fontWeight: '700',
+                                                  color: '#991b1b'
+                                                }}>
+                                                  {record.emptyCount || 0}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Main Inventory Form View
   return (
     <div style={{
       minHeight: '100vh',
@@ -344,80 +894,175 @@ const InventoryForm = () => {
         <div style={{
           background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 100%)',
           color: 'white',
-          padding: '30px',
-          textAlign: 'center',
-          position: 'relative'
+          padding: '24px 32px'
         }}>
-          {/* User Info - Top Right */}
+          {/* Top Row - User Info and Actions */}
           <div style={{
-            position: 'absolute',
-            top: '20px',
-            right: '30px',
             display: 'flex',
+            justifyContent: 'flex-end',
             alignItems: 'center',
-            gap: '15px'
+            marginBottom: '20px'
           }}>
-            {/* Logout Button */}
-            <LogoutButton size="small" />
-            
-            {/* Export Button */}
-            <button
-              onClick={exportToCSV}
-              disabled={exportLoading}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                background: exportLoading ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.2)',
-                border: '1px solid rgba(255, 255, 255, 0.3)',
-                color: 'white',
-                padding: '8px 16px',
-                borderRadius: '20px',
-                fontSize: '14px',
-                cursor: exportLoading ? 'not-allowed' : 'pointer',
-                transition: 'all 0.3s ease'
-              }}
-              onMouseEnter={(e) => {
-                if (!exportLoading) {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.3)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = exportLoading ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.2)';
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7,10 12,15 17,10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              {exportLoading ? 'Exporting...' : 'Export CSV'}
-            </button>
-
-            {/* User Info */}
             <div style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '10px',
-              background: 'rgba(255, 255, 255, 0.1)',
-              padding: '8px 16px',
-              borderRadius: '20px',
-              fontSize: '14px'
+              gap: '16px'
             }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
-              <span style={{ opacity: 0.9 }}>{currentUser}</span>
+              {/* User Info */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '6px 12px',
+                borderRadius: '16px',
+                fontSize: '13px',
+                fontWeight: '500'
+              }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+                <span>{currentUser}</span>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                {/* Past Entries Button */}
+                <button
+                  onClick={() => {
+                    setShowPastEntries(true);
+                    fetchBranches();
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: 'rgba(255, 255, 255, 0.15)',
+                    border: 'none',
+                    color: 'white',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14,2 14,8 20,8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                  </svg>
+                  Past Entries
+                </button>
+                
+                {/* Export Button */}
+                <button
+                  onClick={exportToCSV}
+                  disabled={exportLoading}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: exportLoading ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.15)',
+                    border: 'none',
+                    color: exportLoading ? 'rgba(255, 255, 255, 0.6)' : 'white',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    cursor: exportLoading ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!exportLoading) {
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!exportLoading) {
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+                    }
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7,10 12,15 17,10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  {exportLoading ? 'Exporting...' : 'Export'}
+                </button>
+
+                {/* Logout Button */}
+                <LogoutButton size="small" />
+              </div>
             </div>
           </div>
           
-          <h1 style={{ margin: '0 0 10px 0', fontSize: '28px', fontWeight: '600' }}>
-            Weekly Inventory Entry
-          </h1>
-          <p style={{ margin: 0, opacity: 0.9 }}>
-            Branch ID: {branchId} | Week Ending: {weekEnding}
-          </p>
+          {/* Main Title Section */}
+          <div style={{
+            textAlign: 'center'
+          }}>
+            <h1 style={{ 
+              margin: '0 0 8px 0', 
+              fontSize: '32px', 
+              fontWeight: '700',
+              letterSpacing: '-0.5px'
+            }}>
+              Weekly Inventory Entry
+            </h1>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '24px',
+              opacity: 0.9,
+              fontSize: '15px',
+              fontWeight: '500'
+            }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                  <circle cx="12" cy="10" r="3"></circle>
+                </svg>
+                Branch ID: {branchId}
+              </div>
+              <div style={{
+                width: '1px',
+                height: '16px',
+                background: 'rgba(255, 255, 255, 0.3)'
+              }}></div>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="16" y1="2" x2="16" y2="6"></line>
+                  <line x1="8" y1="2" x2="8" y2="6"></line>
+                  <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                Week Ending: {weekEnding}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div style={{ padding: '30px' }}>
@@ -509,7 +1154,7 @@ const InventoryForm = () => {
             gap: '20px',
             marginBottom: '30px'
           }}>
-            {/* Group Filter - NOW DYNAMIC */}
+            {/* Group Filter */}
             <div>
               <label style={{ 
                 display: 'block', 
