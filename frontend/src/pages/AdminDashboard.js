@@ -32,6 +32,18 @@ const AdminDashboard = () => {
     active: true
   });
 
+  // Cylinder Management state
+  const [showCylinderManagement, setShowCylinderManagement] = useState(false);
+  const [cylinderGroups, setCylinderGroups] = useState([]);
+  const [cylinderTypes, setCylinderTypes] = useState([]);
+  const [branchCylinderTypes, setBranchCylinderTypes] = useState([]);
+  const [cylinderManagementLoading, setCylinderManagementLoading] = useState(false);
+  const [selectedBranchForCylinders, setSelectedBranchForCylinders] = useState('');
+  const [editingGroup, setEditingGroup] = useState(null);
+  const [editingType, setEditingType] = useState(null);
+  const [newGroup, setNewGroup] = useState({ name: '' });
+  const [newType, setNewType] = useState({ label: '', group_id: '' });
+
   // Get current week's Sunday for default filter
   const getCurrentWeekSunday = () => {
     const today = new Date();
@@ -41,13 +53,14 @@ const AdminDashboard = () => {
     return sunday.toISOString().split('T')[0];
   };
 
-  // Group records by submission (same branch, date, user, and submitted time)
+  // Group records by submission with better key generation
   const groupRecordsBySubmission = (records) => {
     const groups = {};
     
     records.forEach(record => {
-      // Create a unique key for each submission
-      const submissionKey = `${record.branchId}_${record.weekEnding}_${record.submittedBy}_${new Date(record.submittedAt).getTime()}`;
+      const submissionTime = new Date(record.submittedAt);
+      const roundedTime = new Date(submissionTime.getFullYear(), submissionTime.getMonth(), submissionTime.getDate(), submissionTime.getHours(), submissionTime.getMinutes());
+      const submissionKey = `${record.branchId}_${record.weekEnding}_${record.submittedBy}_${roundedTime.getTime()}`;
       
       if (!groups[submissionKey]) {
         groups[submissionKey] = {
@@ -58,18 +71,20 @@ const AdminDashboard = () => {
           submittedBy: record.submittedBy,
           submittedAt: record.submittedAt,
           records: [],
-          totalCylinders: 0
+          totalCylinders: 0,
+          totalTypes: 0
         };
       }
       
       groups[submissionKey].records.push(record);
-      groups[submissionKey].totalCylinders += record.fullCount + record.emptyCount;
+      groups[submissionKey].totalCylinders += (record.fullCount || 0) + (record.emptyCount || 0);
+      groups[submissionKey].totalTypes = groups[submissionKey].records.length;
     });
     
     return Object.values(groups).sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
   };
 
-  // Fetch records using the updated admin/records endpoint
+  // Fetch records
   const fetchRecords = async () => {
     setLoading(true);
     setError('');
@@ -92,17 +107,15 @@ const AdminDashboard = () => {
       }
       
       const data = await response.json();
-      console.log('Admin records response:', data);
-      
-      // Only use real data from server - no fallback demo data
       setRecords(data || []);
-      setGroupedRecords(groupRecordsBySubmission(data || []));
+      
+      const grouped = groupRecordsBySubmission(data || []);
+      setGroupedRecords(grouped);
       calculateStats(data || []);
       
     } catch (err) {
       console.error('Fetch error:', err);
       setError(err.message);
-      // Set empty arrays when there's an error - no demo data
       setRecords([]);
       setGroupedRecords([]);
       setStats({
@@ -118,17 +131,17 @@ const AdminDashboard = () => {
 
   // Calculate statistics
   const calculateStats = (data) => {
+    const grouped = groupRecordsBySubmission(data);
     const uniqueBranches = new Set(data.map(r => r.branchId)).size;
     const thisWeekDate = getCurrentWeekSunday();
-    const thisWeekSubmissions = data.filter(r => r.weekEnding === thisWeekDate).length;
+    const thisWeekSubmissions = grouped.filter(submission => submission.weekEnding === thisWeekDate).length;
     
-    // Get total branches from the system
     fetch('https://awisco-cylinder-api.onrender.com/branches')
       .then(response => response.json())
       .then(branches => {
         setStats({
           totalBranches: branches.length,
-          totalSubmissions: data.length,
+          totalSubmissions: grouped.length,
           thisWeek: thisWeekSubmissions,
           pending: Math.max(0, branches.length - uniqueBranches)
         });
@@ -136,7 +149,7 @@ const AdminDashboard = () => {
       .catch(() => {
         setStats({
           totalBranches: uniqueBranches,
-          totalSubmissions: data.length,
+          totalSubmissions: grouped.length,
           thisWeek: thisWeekSubmissions,
           pending: 0
         });
@@ -160,7 +173,7 @@ const AdminDashboard = () => {
     const userInput = prompt(confirmMessage);
     
     if (userInput !== "DELETE ALL") {
-      return; // User cancelled or didn't type the exact phrase
+      return;
     }
     
     const finalConfirm = window.confirm("Last chance! Are you absolutely sure you want to delete ALL records? This cannot be undone!");
@@ -181,11 +194,8 @@ const AdminDashboard = () => {
       }
 
       const result = await response.json();
-      
-      // Refresh the records after deletion
       await fetchRecords();
-      
-      setError(''); // Clear any previous errors
+      setError('');
       alert(`Success: ${result.deletedCount || 'All'} records have been deleted.`);
       
     } catch (err) {
@@ -207,7 +217,7 @@ const AdminDashboard = () => {
     setExpandedSubmissions(newExpanded);
   };
 
-  // Export data using the server endpoint
+  // Export data
   const exportData = async () => {
     setExportLoading(true);
     try {
@@ -227,7 +237,6 @@ const AdminDashboard = () => {
         throw new Error(`Export failed: ${response.statusText}`);
       }
 
-      // Get the filename from the response headers or create a default one
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = `inventory_records_${new Date().toISOString().split('T')[0]}.csv`;
       
@@ -238,7 +247,6 @@ const AdminDashboard = () => {
         }
       }
 
-      // Create blob and download
       const blob = await response.blob();
       const url_obj = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -261,7 +269,6 @@ const AdminDashboard = () => {
   const fetchUsersAndBranches = async () => {
     setUserManagementLoading(true);
     try {
-      // Fetch access codes (users)
       const usersResponse = await fetch('https://awisco-cylinder-api.onrender.com/admin/users');
       let usersData = [];
       if (usersResponse.ok) {
@@ -269,7 +276,6 @@ const AdminDashboard = () => {
       }
       setUsers(usersData);
 
-      // Fetch branches
       const branchesResponse = await fetch('https://awisco-cylinder-api.onrender.com/branches');
       if (branchesResponse.ok) {
         const branchesData = await branchesResponse.json();
@@ -282,7 +288,193 @@ const AdminDashboard = () => {
     }
   };
 
-  // Save user (create or update)
+  // Fetch cylinder management data
+  const fetchCylinderData = async () => {
+    setCylinderManagementLoading(true);
+    try {
+      const groupsResponse = await fetch('https://awisco-cylinder-api.onrender.com/admin/cylinder-groups');
+      if (groupsResponse.ok) {
+        const groupsData = await groupsResponse.json();
+        setCylinderGroups(groupsData);
+      }
+
+      const typesResponse = await fetch('https://awisco-cylinder-api.onrender.com/admin/cylinder-types');
+      if (typesResponse.ok) {
+        const typesData = await typesResponse.json();
+        setCylinderTypes(typesData);
+      }
+
+      if (branches.length === 0) {
+        const branchesResponse = await fetch('https://awisco-cylinder-api.onrender.com/branches');
+        if (branchesResponse.ok) {
+          const branchesData = await branchesResponse.json();
+          setBranches(branchesData);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching cylinder data:', err);
+      setError(`Failed to load cylinder data: ${err.message}`);
+    } finally {
+      setCylinderManagementLoading(false);
+    }
+  };
+
+  // Fetch branch-specific cylinder types
+  const fetchBranchCylinderTypes = async (branchId) => {
+    if (!branchId) {
+      setBranchCylinderTypes([]);
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/branch-cylinder-types/${branchId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setBranchCylinderTypes(data);
+      }
+    } catch (err) {
+      console.error('Error fetching branch cylinder types:', err);
+    }
+  };
+
+  // Save cylinder group
+  const saveCylinderGroup = async (groupData) => {
+    try {
+      const method = editingGroup ? 'PUT' : 'POST';
+      const url = editingGroup 
+        ? `https://awisco-cylinder-api.onrender.com/admin/cylinder-groups/${editingGroup.id}` 
+        : 'https://awisco-cylinder-api.onrender.com/admin/cylinder-groups';
+      
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(groupData)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save group: ${response.statusText}`);
+      }
+
+      await fetchCylinderData();
+      setEditingGroup(null);
+      setNewGroup({ name: '' });
+    } catch (err) {
+      console.error('Error saving group:', err);
+      setError(`Failed to save group: ${err.message}`);
+    }
+  };
+
+  // Save cylinder type
+  const saveCylinderType = async (typeData) => {
+    try {
+      const method = editingType ? 'PUT' : 'POST';
+      const url = editingType 
+        ? `https://awisco-cylinder-api.onrender.com/admin/cylinder-types/${editingType.id}` 
+        : 'https://awisco-cylinder-api.onrender.com/admin/cylinder-types';
+      
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(typeData)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save type: ${response.statusText}`);
+      }
+
+      await fetchCylinderData();
+      setEditingType(null);
+      setNewType({ label: '', group_id: '' });
+    } catch (err) {
+      console.error('Error saving type:', err);
+      setError(`Failed to save type: ${err.message}`);
+    }
+  };
+
+  // Delete cylinder group
+  const deleteCylinderGroup = async (groupId) => {
+    if (!window.confirm('Are you sure you want to delete this cylinder group? This will also remove all associated types.')) return;
+    
+    try {
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/cylinder-groups/${groupId}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete group: ${response.statusText}`);
+      }
+
+      await fetchCylinderData();
+    } catch (err) {
+      console.error('Error deleting group:', err);
+      setError(`Failed to delete group: ${err.message}`);
+    }
+  };
+
+  // Delete cylinder type
+  const deleteCylinderType = async (typeId) => {
+    if (!window.confirm('Are you sure you want to delete this cylinder type?')) return;
+    
+    try {
+      const response = await fetch(`https://awisco-cylinder-api.onrender.com/admin/cylinder-types/${typeId}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete type: ${response.statusText}`);
+      }
+
+      await fetchCylinderData();
+      if (selectedBranchForCylinders) {
+        await fetchBranchCylinderTypes(selectedBranchForCylinders);
+      }
+    } catch (err) {
+      console.error('Error deleting type:', err);
+      setError(`Failed to delete type: ${err.message}`);
+    }
+  };
+
+  // Add cylinder type to branch
+  const addCylinderTypeToBranch = async (branchId, typeId) => {
+    try {
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/admin/branch-cylinder-types', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_id: branchId, type_id: typeId })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to add type to branch: ${response.statusText}`);
+      }
+
+      await fetchBranchCylinderTypes(branchId);
+    } catch (err) {
+      console.error('Error adding type to branch:', err);
+      setError(`Failed to add type to branch: ${err.message}`);
+    }
+  };
+
+  // Remove cylinder type from branch
+  const removeCylinderTypeFromBranch = async (branchId, typeId) => {
+    try {
+      const response = await fetch('https://awisco-cylinder-api.onrender.com/admin/branch-cylinder-types', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_id: branchId, type_id: typeId })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to remove type from branch: ${response.statusText}`);
+      }
+
+      await fetchBranchCylinderTypes(branchId);
+    } catch (err) {
+      console.error('Error removing type from branch:', err);
+      setError(`Failed to remove type from branch: ${err.message}`);
+    }
+  };
+
+  // Save user
   const saveUser = async (userData) => {
     try {
       const method = editingUser ? 'PUT' : 'POST';
@@ -298,7 +490,6 @@ const AdminDashboard = () => {
         throw new Error(`Failed to save user: ${response.statusText}`);
       }
 
-      // Refresh users list
       await fetchUsersAndBranches();
       setEditingUser(null);
       setNewUser({ code: '', user_name: '', branch_id: '', active: true });
@@ -339,7 +530,6 @@ const AdminDashboard = () => {
   }, [filters]);
 
   useEffect(() => {
-    // Set default date filter to current week
     setFilters(prev => ({ ...prev, date: getCurrentWeekSunday() }));
   }, []);
 
@@ -348,6 +538,18 @@ const AdminDashboard = () => {
       fetchUsersAndBranches();
     }
   }, [showUserManagement]);
+
+  useEffect(() => {
+    if (showCylinderManagement) {
+      fetchCylinderData();
+    }
+  }, [showCylinderManagement]);
+
+  useEffect(() => {
+    if (selectedBranchForCylinders) {
+      fetchBranchCylinderTypes(selectedBranchForCylinders);
+    }
+  }, [selectedBranchForCylinders]);
 
   return (
     <div style={{
@@ -406,6 +608,30 @@ const AdminDashboard = () => {
                 System Administrator
               </span>
             </div>
+
+            <button
+              onClick={() => setShowCylinderManagement(!showCylinderManagement)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '10px 16px',
+                background: showCylinderManagement ? '#38a169' : '#2d8659',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '500',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              {showCylinderManagement ? 'Hide' : 'Manage'} Cylinders
+            </button>
 
             <button
               onClick={() => setShowUserManagement(!showUserManagement)}
@@ -534,6 +760,474 @@ const AdminDashboard = () => {
         margin: '0 auto',
         padding: '24px'
       }}>
+        {/* Cylinder Management Section */}
+        {showCylinderManagement && (
+          <div style={{
+            background: 'white',
+            padding: '24px',
+            borderRadius: '12px',
+            border: '1px solid #e2e8f0',
+            marginBottom: '24px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+          }}>
+            <h3 style={{ 
+              margin: '0 0 20px 0', 
+              fontSize: '18px', 
+              fontWeight: '600',
+              color: '#1a202c',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              Cylinder Management
+            </h3>
+
+            {cylinderManagementLoading ? (
+              <div style={{ textAlign: 'center', padding: '20px' }}>Loading cylinder data...</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '32px' }}>
+                {/* Left Column: Groups and Types Management */}
+                <div>
+                  {/* Cylinder Groups Section */}
+                  <div style={{ marginBottom: '32px' }}>
+                    <h4 style={{ 
+                      margin: '0 0 16px 0', 
+                      fontSize: '16px', 
+                      fontWeight: '600',
+                      color: '#2d3748',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                        <rect x="3" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="14" width="7" height="7"></rect>
+                        <rect x="3" y="14" width="7" height="7"></rect>
+                      </svg>
+                      Cylinder Groups
+                    </h4>
+                    
+                    {/* Add/Edit Group Form */}
+                    <div style={{
+                      background: '#f7fafc',
+                      padding: '16px',
+                      borderRadius: '8px',
+                      marginBottom: '16px'
+                    }}>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+                        <div style={{ flex: 1 }}>
+                          <input
+                            type="text"
+                            placeholder="Group name"
+                            value={editingGroup ? editingGroup.name : newGroup.name}
+                            onChange={(e) => editingGroup 
+                              ? setEditingGroup({...editingGroup, name: e.target.value})
+                              : setNewGroup({...newGroup, name: e.target.value})
+                            }
+                            style={{
+                              width: '100%',
+                              padding: '10px 12px',
+                              border: '1px solid #e2e8f0',
+                              borderRadius: '6px',
+                              fontSize: '14px'
+                            }}
+                          />
+                        </div>
+                        <button
+                          onClick={() => saveCylinderGroup(editingGroup || newGroup)}
+                          style={{
+                            padding: '10px 16px',
+                            background: '#38a169',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '14px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {editingGroup ? 'Update' : 'Add'} Group
+                        </button>
+                        {editingGroup && (
+                          <button
+                            onClick={() => {
+                              setEditingGroup(null);
+                              setNewGroup({ name: '' });
+                            }}
+                            style={{
+                              padding: '10px 16px',
+                              background: '#718096',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              fontSize: '14px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Groups List */}
+                    <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                      {cylinderGroups.map(group => (
+                        <div 
+                          key={group.id}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '12px',
+                            background: 'white',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '6px',
+                            marginBottom: '8px'
+                          }}
+                        >
+                          <span style={{ fontWeight: '500' }}>{group.name}</span>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => setEditingGroup(group)}
+                              style={{
+                                padding: '4px 8px',
+                                background: '#3182ce',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteCylinderGroup(group.id)}
+                              style={{
+                                padding: '4px 8px',
+                                background: '#e53e3e',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Cylinder Types Section */}
+                  <div>
+                    <h4 style={{ 
+                      margin: '0 0 16px 0', 
+                      fontSize: '16px', 
+                      fontWeight: '600',
+                      color: '#2d3748',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <circle cx="12" cy="12" r="6"></circle>
+                        <circle cx="12" cy="12" r="2"></circle>
+                      </svg>
+                      Cylinder Types
+                    </h4>
+                    
+                    {/* Add/Edit Type Form */}
+                    <div style={{
+                      background: '#f7fafc',
+                      padding: '16px',
+                      borderRadius: '8px',
+                      marginBottom: '16px'
+                    }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                        <input
+                          type="text"
+                          placeholder="Type label"
+                          value={editingType ? editingType.label : newType.label}
+                          onChange={(e) => editingType 
+                            ? setEditingType({...editingType, label: e.target.value})
+                            : setNewType({...newType, label: e.target.value})
+                          }
+                          style={{
+                            padding: '10px 12px',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '6px',
+                            fontSize: '14px'
+                          }}
+                        />
+                        <select
+                          value={editingType ? editingType.group_id : newType.group_id}
+                          onChange={(e) => editingType 
+                            ? setEditingType({...editingType, group_id: e.target.value})
+                            : setNewType({...newType, group_id: e.target.value})
+                          }
+                          style={{
+                            padding: '10px 12px',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '6px',
+                            fontSize: '14px'
+                          }}
+                        >
+                          <option value="">Select Group</option>
+                          {cylinderGroups.map(group => (
+                            <option key={group.id} value={group.id}>
+                              {group.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => saveCylinderType(editingType || newType)}
+                          style={{
+                            padding: '10px 16px',
+                            background: '#38a169',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '14px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {editingType ? 'Update' : 'Add'} Type
+                        </button>
+                        {editingType && (
+                          <button
+                            onClick={() => {
+                              setEditingType(null);
+                              setNewType({ label: '', group_id: '' });
+                            }}
+                            style={{
+                              padding: '10px 16px',
+                              background: '#718096',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              fontSize: '14px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Types List */}
+                    <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                      {cylinderTypes.map(type => (
+                        <div 
+                          key={type.id}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '12px',
+                            background: 'white',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '6px',
+                            marginBottom: '8px'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: '500' }}>{type.label}</div>
+                            <div style={{ fontSize: '12px', color: '#718096' }}>
+                              Group: {type.group_name}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => setEditingType(type)}
+                              style={{
+                                padding: '4px 8px',
+                                background: '#3182ce',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteCylinderType(type.id)}
+                              style={{
+                                padding: '4px 8px',
+                                background: '#e53e3e',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Branch Assignment */}
+                <div>
+                  <h4 style={{ 
+                    margin: '0 0 16px 0', 
+                    fontSize: '16px', 
+                    fontWeight: '600',
+                    color: '#2d3748',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="9" cy="7" r="4"></circle>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                    Branch Cylinder Assignment
+                  </h4>
+                  
+                  {/* Branch Selection */}
+                  <div style={{ marginBottom: '20px' }}>
+                    <select
+                      value={selectedBranchForCylinders}
+                      onChange={(e) => setSelectedBranchForCylinders(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '6px',
+                        fontSize: '14px'
+                      }}
+                    >
+                      <option value="">Select a branch to manage cylinders</option>
+                      {branches.map(branch => (
+                        <option key={branch.id} value={branch.id}>
+                          {branch.name} (ID: {branch.id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {selectedBranchForCylinders && (
+                    <div>
+                      {/* Available Types to Add */}
+                      <div style={{ marginBottom: '20px' }}>
+                        <h5 style={{ 
+                          margin: '0 0 12px 0', 
+                          fontSize: '14px', 
+                          fontWeight: '600',
+                          color: '#4a5568'
+                        }}>
+                          Add Cylinder Types to Branch
+                        </h5>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {cylinderTypes
+                            .filter(type => !branchCylinderTypes.find(bct => bct.type_id === type.id))
+                            .map(type => (
+                            <button
+                              key={type.id}
+                              onClick={() => addCylinderTypeToBranch(selectedBranchForCylinders, type.id)}
+                              style={{
+                                padding: '6px 12px',
+                                background: '#e6fffa',
+                                color: '#234e52',
+                                border: '1px solid #b2f5ea',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              + {type.label} ({type.group_name})
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Assigned Types */}
+                      <div>
+                        <h5 style={{ 
+                          margin: '0 0 12px 0', 
+                          fontSize: '14px', 
+                          fontWeight: '600',
+                          color: '#4a5568'
+                        }}>
+                          Currently Assigned Types ({branchCylinderTypes.length})
+                        </h5>
+                        <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                          {branchCylinderTypes.map(bct => (
+                            <div 
+                              key={bct.type_id}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '12px',
+                                background: '#f0fff4',
+                                border: '1px solid #c6f6d5',
+                                borderRadius: '6px',
+                                marginBottom: '8px'
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontWeight: '500' }}>{bct.type_label}</div>
+                                <div style={{ fontSize: '12px', color: '#22543d' }}>
+                                  Group: {bct.group_name}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => removeCylinderTypeFromBranch(selectedBranchForCylinders, bct.type_id)}
+                                style={{
+                                  padding: '4px 8px',
+                                  background: '#e53e3e',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  fontSize: '12px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                          {branchCylinderTypes.length === 0 && (
+                            <div style={{ 
+                              textAlign: 'center', 
+                              padding: '20px', 
+                              color: '#718096',
+                              fontStyle: 'italic'
+                            }}>
+                              No cylinder types assigned to this branch yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* User Management Section */}
         {showUserManagement && (
           <div style={{
@@ -1013,7 +1707,10 @@ const AdminDashboard = () => {
           <div style={{
             background: '#f7fafc',
             padding: '16px 24px',
-            borderBottom: '1px solid #e2e8f0'
+            borderBottom: '1px solid #e2e8f0',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
           }}>
             <h3 style={{ 
               margin: 0, 
@@ -1021,8 +1718,19 @@ const AdminDashboard = () => {
               fontWeight: '600',
               color: '#1a202c'
             }}>
-              Inventory Records
+              Inventory Submissions
             </h3>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              fontSize: '14px',
+              color: '#718096'
+            }}>
+              <span>Showing {groupedRecords.length} submissions</span>
+              <span>•</span>
+              <span>{records.length} total records</span>
+            </div>
           </div>
 
           {loading ? (
@@ -1043,7 +1751,7 @@ const AdminDashboard = () => {
                 <circle cx="11" cy="11" r="8"></circle>
                 <path d="m21 21-4.35-4.35"></path>
               </svg>
-              <div style={{ fontSize: '16px', marginBottom: '8px' }}>No records found</div>
+              <div style={{ fontSize: '16px', marginBottom: '8px' }}>No submissions found</div>
               <div style={{ fontSize: '14px' }}>Try adjusting your filters or check if data has been submitted</div>
             </div>
           ) : (
@@ -1068,9 +1776,20 @@ const AdminDashboard = () => {
                         style={{ 
                           borderBottom: '1px solid #e2e8f0',
                           cursor: 'pointer',
-                          background: expandedSubmissions.has(submission.id) ? '#f8fafc' : 'white'
+                          background: expandedSubmissions.has(submission.id) ? '#f8fafc' : 'white',
+                          transition: 'background-color 0.2s'
                         }}
                         onClick={() => toggleSubmissionExpansion(submission.id)}
+                        onMouseEnter={(e) => {
+                          if (!expandedSubmissions.has(submission.id)) {
+                            e.currentTarget.style.background = '#f9fafb';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!expandedSubmissions.has(submission.id)) {
+                            e.currentTarget.style.background = 'white';
+                          }
+                        }}
                       >
                         <td style={{ padding: '16px 24px', textAlign: 'center' }}>
                           <svg 
@@ -1099,21 +1818,39 @@ const AdminDashboard = () => {
                         <td style={{ padding: '16px 24px', color: '#4a5568' }}>
                           {new Date(submission.weekEnding).toLocaleDateString()}
                         </td>
-                        <td style={{ padding: '16px 24px', textAlign: 'center', fontWeight: '600', color: '#3182ce' }}>
-                          {submission.totalCylinders}
+                        <td style={{ padding: '16px 24px', textAlign: 'center' }}>
+                          <span style={{
+                            fontWeight: '600', 
+                            color: '#3182ce',
+                            background: '#ebf8ff',
+                            padding: '4px 8px',
+                            borderRadius: '6px',
+                            fontSize: '14px'
+                          }}>
+                            {submission.totalCylinders}
+                          </span>
                         </td>
-                        <td style={{ padding: '16px 24px', textAlign: 'center', color: '#4a5568' }}>
-                          {submission.records.length} types
+                        <td style={{ padding: '16px 24px', textAlign: 'center' }}>
+                          <span style={{
+                            color: '#4a5568',
+                            background: '#f7fafc',
+                            padding: '4px 8px',
+                            borderRadius: '6px',
+                            fontSize: '14px'
+                          }}>
+                            {submission.totalTypes} types
+                          </span>
                         </td>
                         <td style={{ padding: '16px 24px' }}>
                           <div style={{ 
                             fontWeight: '500', 
                             color: '#1a202c',
-                            padding: '4px 8px',
+                            padding: '4px 12px',
                             background: '#e6fffa',
-                            borderRadius: '12px',
+                            borderRadius: '20px',
                             fontSize: '12px',
-                            display: 'inline-block'
+                            display: 'inline-block',
+                            border: '1px solid #b2f5ea'
                           }}>
                             {submission.submittedBy || 'Unknown User'}
                           </div>
@@ -1131,60 +1868,144 @@ const AdminDashboard = () => {
                       {/* Expanded cylinder details */}
                       {expandedSubmissions.has(submission.id) && (
                         <tr>
-                          <td colSpan="7" style={{ padding: '0', background: '#f8fafc' }}>
-                            <div style={{ padding: '16px 24px' }}>
-                              <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '600', color: '#4a5568' }}>
-                                Cylinder Details:
-                              </h4>
+                          <td colSpan="7" style={{ padding: '0', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                            <div style={{ padding: '24px' }}>
+                              <div style={{ 
+                                display: 'flex', 
+                                justifyContent: 'space-between', 
+                                alignItems: 'center',
+                                marginBottom: '16px'
+                              }}>
+                                <h4 style={{ 
+                                  margin: 0, 
+                                  fontSize: '16px', 
+                                  fontWeight: '600', 
+                                  color: '#1a202c',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px'
+                                }}>
+                                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                    <line x1="9" y1="9" x2="15" y2="15"></line>
+                                    <line x1="15" y1="9" x2="9" y2="15"></line>
+                                  </svg>
+                                  Cylinder Details ({submission.totalTypes} types)
+                                </h4>
+                                <div style={{
+                                  display: 'flex',
+                                  gap: '16px',
+                                  fontSize: '14px',
+                                  color: '#718096'
+                                }}>
+                                  <span>Total Full: {submission.records.reduce((sum, r) => sum + (r.fullCount || 0), 0)}</span>
+                                  <span>Total Empty: {submission.records.reduce((sum, r) => sum + (r.emptyCount || 0), 0)}</span>
+                                </div>
+                              </div>
+                              
                               <div style={{ 
                                 display: 'grid', 
-                                gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', 
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
                                 gap: '12px' 
                               }}>
-                                {submission.records.map((record, index) => (
+                                {submission.records
+                                  .sort((a, b) => (a.groupName || '').localeCompare(b.groupName || ''))
+                                  .map((record, index) => (
                                   <div 
                                     key={index}
                                     style={{
                                       background: 'white',
-                                      padding: '12px',
-                                      borderRadius: '6px',
+                                      padding: '16px',
+                                      borderRadius: '8px',
                                       border: '1px solid #e2e8f0',
-                                      display: 'flex',
-                                      justifyContent: 'space-between',
-                                      alignItems: 'center'
+                                      boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                                     }}
                                   >
-                                    <div>
-                                      <div style={{ fontWeight: '500', color: '#1a202c' }}>
-                                        {record.cylinderType || record.label}
-                                      </div>
-                                      {record.groupName && (
-                                        <div style={{ fontSize: '12px', color: '#718096' }}>
-                                          Group: {record.groupName}
+                                    <div style={{ 
+                                      display: 'flex', 
+                                      justifyContent: 'space-between', 
+                                      alignItems: 'flex-start',
+                                      marginBottom: '12px'
+                                    }}>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ 
+                                          fontWeight: '600', 
+                                          color: '#1a202c',
+                                          fontSize: '14px',
+                                          marginBottom: '4px'
+                                        }}>
+                                          {record.cylinderType || record.label}
                                         </div>
-                                      )}
+                                        {record.groupName && (
+                                          <div style={{ 
+                                            fontSize: '12px', 
+                                            color: '#718096',
+                                            background: '#f7fafc',
+                                            padding: '2px 6px',
+                                            borderRadius: '4px',
+                                            display: 'inline-block'
+                                          }}>
+                                            {record.groupName}
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
-                                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                      <span style={{ 
-                                        padding: '4px 8px', 
-                                        background: '#dcfce7', 
-                                        color: '#166534', 
-                                        borderRadius: '4px', 
-                                        fontSize: '12px', 
-                                        fontWeight: '500' 
+                                    
+                                    <div style={{ 
+                                      display: 'flex', 
+                                      gap: '8px', 
+                                      alignItems: 'center',
+                                      justifyContent: 'center'
+                                    }}>
+                                      <div style={{
+                                        flex: 1,
+                                        textAlign: 'center',
+                                        padding: '8px',
+                                        background: '#dcfce7',
+                                        borderRadius: '6px',
+                                        border: '1px solid #bbf7d0'
                                       }}>
-                                        Full: {record.fullCount}
-                                      </span>
-                                      <span style={{ 
-                                        padding: '4px 8px', 
-                                        background: '#fef2f2', 
-                                        color: '#991b1b', 
-                                        borderRadius: '4px', 
-                                        fontSize: '12px', 
-                                        fontWeight: '500' 
+                                        <div style={{ 
+                                          fontSize: '12px', 
+                                          color: '#166534',
+                                          fontWeight: '500',
+                                          marginBottom: '2px'
+                                        }}>
+                                          FULL
+                                        </div>
+                                        <div style={{ 
+                                          fontSize: '18px', 
+                                          fontWeight: '700',
+                                          color: '#166534'
+                                        }}>
+                                          {record.fullCount || 0}
+                                        </div>
+                                      </div>
+                                      
+                                      <div style={{
+                                        flex: 1,
+                                        textAlign: 'center',
+                                        padding: '8px',
+                                        background: '#fef2f2',
+                                        borderRadius: '6px',
+                                        border: '1px solid #fecaca'
                                       }}>
-                                        Empty: {record.emptyCount}
-                                      </span>
+                                        <div style={{ 
+                                          fontSize: '12px', 
+                                          color: '#991b1b',
+                                          fontWeight: '500',
+                                          marginBottom: '2px'
+                                        }}>
+                                          EMPTY
+                                        </div>
+                                        <div style={{ 
+                                          fontSize: '18px', 
+                                          fontWeight: '700',
+                                          color: '#991b1b'
+                                        }}>
+                                          {record.emptyCount || 0}
+                                        </div>
+                                      </div>
                                     </div>
                                   </div>
                                 ))}
