@@ -727,6 +727,577 @@ app.get("/admin/users/:id/activity", async (req, res) => {
   }
 });
 
+// ========== CYLINDER MANAGEMENT ENDPOINTS ==========
+
+// Get all cylinder groups
+app.get("/admin/cylinder-groups", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, created_at
+      FROM cylinder_groups 
+      ORDER BY name
+    `);
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error(" GET /admin/cylinder-groups error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Create new cylinder group
+app.post("/admin/cylinder-groups", async (req, res) => {
+  const { name } = req.body;
+
+  if (!name || name.trim() === '') {
+    return res.status(400).json({ error: "Group name is required" });
+  }
+
+  try {
+    // Check if group name already exists
+    const existingGroup = await pool.query(
+      "SELECT id FROM cylinder_groups WHERE LOWER(name) = LOWER($1)",
+      [name.trim()]
+    );
+
+    if (existingGroup.rows.length > 0) {
+      return res.status(409).json({ error: "Cylinder group with this name already exists" });
+    }
+
+    // Insert new group
+    const result = await pool.query(
+      `INSERT INTO cylinder_groups (name, created_at)
+       VALUES ($1, NOW())
+       RETURNING *`,
+      [name.trim()]
+    );
+
+    console.log(`✅ Created new cylinder group: ${name}`);
+
+    res.status(201).json({
+      message: "Cylinder group created successfully",
+      group: result.rows[0]
+    });
+  } catch (err) {
+    console.error(" POST /admin/cylinder-groups error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update cylinder group
+app.put("/admin/cylinder-groups/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  if (!name || name.trim() === '') {
+    return res.status(400).json({ error: "Group name is required" });
+  }
+
+  try {
+    // Check if group exists
+    const groupExists = await pool.query(
+      "SELECT id FROM cylinder_groups WHERE id = $1",
+      [id]
+    );
+
+    if (groupExists.rows.length === 0) {
+      return res.status(404).json({ error: "Cylinder group not found" });
+    }
+
+    // Check if name already exists for different group
+    const existingGroup = await pool.query(
+      "SELECT id FROM cylinder_groups WHERE LOWER(name) = LOWER($1) AND id != $2",
+      [name.trim(), id]
+    );
+
+    if (existingGroup.rows.length > 0) {
+      return res.status(409).json({ error: "Cylinder group with this name already exists" });
+    }
+
+    // Update group
+    const result = await pool.query(
+      `UPDATE cylinder_groups 
+       SET name = $1
+       WHERE id = $2
+       RETURNING *`,
+      [name.trim(), id]
+    );
+
+    console.log(`✅ Updated cylinder group: ${name}`);
+
+    res.status(200).json({
+      message: "Cylinder group updated successfully",
+      group: result.rows[0]
+    });
+  } catch (err) {
+    console.error(" PUT /admin/cylinder-groups error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete cylinder group
+app.delete("/admin/cylinder-groups/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check if group exists
+    const groupExists = await pool.query(
+      "SELECT name FROM cylinder_groups WHERE id = $1",
+      [id]
+    );
+
+    if (groupExists.rows.length === 0) {
+      return res.status(404).json({ error: "Cylinder group not found" });
+    }
+
+    const groupName = groupExists.rows[0].name;
+
+    // Check if group has any cylinder types
+    const hasTypes = await pool.query(
+      "SELECT COUNT(*) as count FROM cylinder_types WHERE group_id = $1",
+      [id]
+    );
+
+    if (parseInt(hasTypes.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: "Cannot delete group that contains cylinder types. Delete the types first." 
+      });
+    }
+
+    // Delete group
+    await pool.query("DELETE FROM cylinder_groups WHERE id = $1", [id]);
+
+    console.log(`✅ Deleted cylinder group: ${groupName}`);
+
+    res.status(200).json({
+      message: "Cylinder group deleted successfully"
+    });
+  } catch (err) {
+    console.error(" DELETE /admin/cylinder-groups error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all cylinder types with group information
+app.get("/admin/cylinder-types", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        ct.id,
+        ct.label,
+        ct.group_id,
+        cg.name as group_name,
+        ct.created_at
+      FROM cylinder_types ct
+      JOIN cylinder_groups cg ON ct.group_id = cg.id
+      ORDER BY cg.name, ct.label
+    `);
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error(" GET /admin/cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Create new cylinder type
+app.post("/admin/cylinder-types", async (req, res) => {
+  const { label, group_id } = req.body;
+
+  if (!label || label.trim() === '' || !group_id) {
+    return res.status(400).json({ error: "Label and group_id are required" });
+  }
+
+  try {
+    // Check if group exists
+    const groupExists = await pool.query(
+      "SELECT id FROM cylinder_groups WHERE id = $1",
+      [group_id]
+    );
+
+    if (groupExists.rows.length === 0) {
+      return res.status(400).json({ error: "Cylinder group does not exist" });
+    }
+
+    // Check if type label already exists in the same group
+    const existingType = await pool.query(
+      "SELECT id FROM cylinder_types WHERE LOWER(label) = LOWER($1) AND group_id = $2",
+      [label.trim(), group_id]
+    );
+
+    if (existingType.rows.length > 0) {
+      return res.status(409).json({ error: "Cylinder type with this label already exists in this group" });
+    }
+
+    // Insert new type
+    const result = await pool.query(
+      `INSERT INTO cylinder_types (label, group_id, created_at)
+       VALUES ($1, $2, NOW())
+       RETURNING *`,
+      [label.trim(), group_id]
+    );
+
+    console.log(`✅ Created new cylinder type: ${label} in group ${group_id}`);
+
+    res.status(201).json({
+      message: "Cylinder type created successfully",
+      type: result.rows[0]
+    });
+  } catch (err) {
+    console.error(" POST /admin/cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update cylinder type
+app.put("/admin/cylinder-types/:id", async (req, res) => {
+  const { id } = req.params;
+  const { label, group_id } = req.body;
+
+  if (!label || label.trim() === '' || !group_id) {
+    return res.status(400).json({ error: "Label and group_id are required" });
+  }
+
+  try {
+    // Check if type exists
+    const typeExists = await pool.query(
+      "SELECT id FROM cylinder_types WHERE id = $1",
+      [id]
+    );
+
+    if (typeExists.rows.length === 0) {
+      return res.status(404).json({ error: "Cylinder type not found" });
+    }
+
+    // Check if group exists
+    const groupExists = await pool.query(
+      "SELECT id FROM cylinder_groups WHERE id = $1",
+      [group_id]
+    );
+
+    if (groupExists.rows.length === 0) {
+      return res.status(400).json({ error: "Cylinder group does not exist" });
+    }
+
+    // Check if label already exists in the same group for different type
+    const existingType = await pool.query(
+      "SELECT id FROM cylinder_types WHERE LOWER(label) = LOWER($1) AND group_id = $2 AND id != $3",
+      [label.trim(), group_id, id]
+    );
+
+    if (existingType.rows.length > 0) {
+      return res.status(409).json({ error: "Cylinder type with this label already exists in this group" });
+    }
+
+    // Update type
+    const result = await pool.query(
+      `UPDATE cylinder_types 
+       SET label = $1, group_id = $2
+       WHERE id = $3
+       RETURNING *`,
+      [label.trim(), group_id, id]
+    );
+
+    console.log(`✅ Updated cylinder type: ${label}`);
+
+    res.status(200).json({
+      message: "Cylinder type updated successfully",
+      type: result.rows[0]
+    });
+  } catch (err) {
+    console.error(" PUT /admin/cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete cylinder type
+app.delete("/admin/cylinder-types/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check if type exists
+    const typeExists = await pool.query(
+      "SELECT label FROM cylinder_types WHERE id = $1",
+      [id]
+    );
+
+    if (typeExists.rows.length === 0) {
+      return res.status(404).json({ error: "Cylinder type not found" });
+    }
+
+    const typeLabel = typeExists.rows[0].label;
+
+    // Check if type is used in any inventory records
+    const hasRecords = await pool.query(
+      "SELECT COUNT(*) as count FROM inventory_records WHERE type_id = $1",
+      [id]
+    );
+
+    if (parseInt(hasRecords.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: "Cannot delete cylinder type that has been used in inventory records" 
+      });
+    }
+
+    // Check if type is assigned to any branches
+    const hasBranchAssignments = await pool.query(
+      "SELECT COUNT(*) as count FROM branch_cylinder_types WHERE type_id = $1",
+      [id]
+    );
+
+    if (parseInt(hasBranchAssignments.rows[0].count) > 0) {
+      // Remove branch assignments first
+      await pool.query("DELETE FROM branch_cylinder_types WHERE type_id = $1", [id]);
+    }
+
+    // Delete type
+    await pool.query("DELETE FROM cylinder_types WHERE id = $1", [id]);
+
+    console.log(`✅ Deleted cylinder type: ${typeLabel}`);
+
+    res.status(200).json({
+      message: "Cylinder type deleted successfully"
+    });
+  } catch (err) {
+    console.error(" DELETE /admin/cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get cylinder types for a specific branch
+app.get("/admin/branch-cylinder-types/:branchId", async (req, res) => {
+  const { branchId } = req.params;
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        bct.branch_id,
+        bct.type_id,
+        ct.label as type_label,
+        ct.group_id,
+        cg.name as group_name
+      FROM branch_cylinder_types bct
+      JOIN cylinder_types ct ON bct.type_id = ct.id
+      JOIN cylinder_groups cg ON ct.group_id = cg.id
+      WHERE bct.branch_id = $1
+      ORDER BY cg.name, ct.label
+    `, [branchId]);
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error(" GET /admin/branch-cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Add cylinder type to branch
+app.post("/admin/branch-cylinder-types", async (req, res) => {
+  const { branch_id, type_id } = req.body;
+
+  if (!branch_id || !type_id) {
+    return res.status(400).json({ error: "branch_id and type_id are required" });
+  }
+
+  try {
+    // Check if branch exists
+    const branchExists = await pool.query(
+      "SELECT id FROM branches WHERE id = $1",
+      [branch_id]
+    );
+
+    if (branchExists.rows.length === 0) {
+      return res.status(400).json({ error: "Branch does not exist" });
+    }
+
+    // Check if cylinder type exists
+    const typeExists = await pool.query(
+      "SELECT id FROM cylinder_types WHERE id = $1",
+      [type_id]
+    );
+
+    if (typeExists.rows.length === 0) {
+      return res.status(400).json({ error: "Cylinder type does not exist" });
+    }
+
+    // Check if assignment already exists
+    const existingAssignment = await pool.query(
+      "SELECT id FROM branch_cylinder_types WHERE branch_id = $1 AND type_id = $2",
+      [branch_id, type_id]
+    );
+
+    if (existingAssignment.rows.length > 0) {
+      return res.status(409).json({ error: "Cylinder type is already assigned to this branch" });
+    }
+
+    // Insert new assignment
+    const result = await pool.query(
+      `INSERT INTO branch_cylinder_types (branch_id, type_id, created_at)
+       VALUES ($1, $2, NOW())
+       RETURNING *`,
+      [branch_id, type_id]
+    );
+
+    console.log(`✅ Added cylinder type ${type_id} to branch ${branch_id}`);
+
+    res.status(201).json({
+      message: "Cylinder type assigned to branch successfully",
+      assignment: result.rows[0]
+    });
+  } catch (err) {
+    console.error(" POST /admin/branch-cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Remove cylinder type from branch
+app.delete("/admin/branch-cylinder-types", async (req, res) => {
+  const { branch_id, type_id } = req.body;
+
+  if (!branch_id || !type_id) {
+    return res.status(400).json({ error: "branch_id and type_id are required" });
+  }
+
+  try {
+    // Check if assignment exists
+    const assignmentExists = await pool.query(
+      "SELECT id FROM branch_cylinder_types WHERE branch_id = $1 AND type_id = $2",
+      [branch_id, type_id]
+    );
+
+    if (assignmentExists.rows.length === 0) {
+      return res.status(404).json({ error: "Assignment not found" });
+    }
+
+    // Check if this type has been used in inventory records for this branch
+    const hasRecords = await pool.query(
+      "SELECT COUNT(*) as count FROM inventory_records WHERE branch_id = $1 AND type_id = $2",
+      [branch_id, type_id]
+    );
+
+    if (parseInt(hasRecords.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: "Cannot remove cylinder type that has been used in inventory records for this branch" 
+      });
+    }
+
+    // Delete assignment
+    await pool.query(
+      "DELETE FROM branch_cylinder_types WHERE branch_id = $1 AND type_id = $2",
+      [branch_id, type_id]
+    );
+
+    console.log(`✅ Removed cylinder type ${type_id} from branch ${branch_id}`);
+
+    res.status(200).json({
+      message: "Cylinder type removed from branch successfully"
+    });
+  } catch (err) {
+    console.error(" DELETE /admin/branch-cylinder-types error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Bulk assign cylinder types to branch
+app.post("/admin/branch-cylinder-types/bulk", async (req, res) => {
+  const { branch_id, type_ids } = req.body;
+
+  if (!branch_id || !Array.isArray(type_ids) || type_ids.length === 0) {
+    return res.status(400).json({ error: "branch_id and type_ids array are required" });
+  }
+
+  try {
+    // Check if branch exists
+    const branchExists = await pool.query(
+      "SELECT id FROM branches WHERE id = $1",
+      [branch_id]
+    );
+
+    if (branchExists.rows.length === 0) {
+      return res.status(400).json({ error: "Branch does not exist" });
+    }
+
+    // Check if all cylinder types exist
+    const placeholders = type_ids.map((_, index) => `${index + 1}`).join(',');
+    const typesExist = await pool.query(
+      `SELECT id FROM cylinder_types WHERE id IN (${placeholders})`,
+      type_ids
+    );
+
+    if (typesExist.rows.length !== type_ids.length) {
+      return res.status(400).json({ error: "One or more cylinder types do not exist" });
+    }
+
+    // Get existing assignments
+    const existingAssignments = await pool.query(
+      `SELECT type_id FROM branch_cylinder_types WHERE branch_id = $1 AND type_id IN (${placeholders})`,
+      [branch_id, ...type_ids]
+    );
+
+    const existingTypeIds = existingAssignments.rows.map(row => row.type_id);
+    const newTypeIds = type_ids.filter(typeId => !existingTypeIds.includes(typeId));
+
+    if (newTypeIds.length === 0) {
+      return res.status(409).json({ error: "All cylinder types are already assigned to this branch" });
+    }
+
+    // Insert new assignments
+    const insertPromises = newTypeIds.map(typeId => 
+      pool.query(
+        `INSERT INTO branch_cylinder_types (branch_id, type_id, created_at)
+         VALUES ($1, $2, NOW())`,
+        [branch_id, typeId]
+      )
+    );
+
+    await Promise.all(insertPromises);
+
+    console.log(`✅ Bulk assigned ${newTypeIds.length} cylinder types to branch ${branch_id}`);
+
+    res.status(201).json({
+      message: `Successfully assigned ${newTypeIds.length} cylinder types to branch`,
+      assignedCount: newTypeIds.length,
+      skippedCount: existingTypeIds.length
+    });
+  } catch (err) {
+    console.error(" POST /admin/branch-cylinder-types/bulk error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get cylinder assignment summary for all branches
+app.get("/admin/cylinder-assignments-summary", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        b.id as branch_id,
+        b.name as branch_name,
+        COUNT(bct.type_id) as assigned_types_count,
+        ARRAY_AGG(
+          CASE 
+            WHEN bct.type_id IS NOT NULL 
+            THEN jsonb_build_object(
+              'type_id', ct.id,
+              'type_label', ct.label,
+              'group_name', cg.name
+            )
+            ELSE NULL
+          END
+        ) FILTER (WHERE bct.type_id IS NOT NULL) as assigned_types
+      FROM branches b
+      LEFT JOIN branch_cylinder_types bct ON b.id = bct.branch_id
+      LEFT JOIN cylinder_types ct ON bct.type_id = ct.id
+      LEFT JOIN cylinder_groups cg ON ct.group_id = cg.id
+      GROUP BY b.id, b.name
+      ORDER BY b.name
+    `);
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error(" GET /admin/cylinder-assignments-summary error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Helper function to get current week's Sunday
 function getCurrentWeekSunday() {
   const today = new Date();
@@ -748,6 +1319,7 @@ app.listen(PORT, () => {
   console.log(`📋 Records API available at http://localhost:${PORT}/records`);
   console.log(`👥 User management API available at http://localhost:${PORT}/admin/users`);
   console.log(`🗑️ Delete all records API available at http://localhost:${PORT}/admin/records/delete-all`);
+  console.log(`⚙️ Cylinder management API available at http://localhost:${PORT}/admin/cylinder-groups`);
   console.log(`🌐 CORS enabled for: cylinder-tracking-app.netlify.app`);
 });
 
