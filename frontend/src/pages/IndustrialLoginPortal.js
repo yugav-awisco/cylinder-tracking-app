@@ -556,20 +556,6 @@ const IndustrialLoginPortal = () => {
             </div>
           )}
 
-          {/* Admin Access Hint */}
-          <div style={{
-            background: '#e8f5e8',
-            border: '1px solid #c3e6c3',
-            borderRadius: '10px',
-            padding: '12px',
-            marginBottom: '20px',
-            fontSize: '12px',
-            color: '#2d5d2d',
-            textAlign: 'center'
-          }}>
-            💡 <strong>Admin Access:</strong> Use code "ADMIN2025" for administrative access
-          </div>
-
           <div style={{
             background: '#f8f9fa',
             border: '1px solid #e9ecef',
